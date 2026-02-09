@@ -9,14 +9,14 @@ exp:
   n_rollout_threads: 5
   n_eval_rollout_threads: 2
   n_render_rollout_threads: 1
-  num_env_steps: 10000000 # total environment steps to train
+  num_env_steps: 10000 # total environment steps to train
   user_name: marl
 
 # Environment settings (common)
 env:
   env_name: Gym
   use_obs_instead_of_state: false # use global state instead of concatenated local obs
-  episode_length: 200 # max steps per episode
+  episode_length: 50 # max steps per episode
 
 # Model/network settings
 model:
