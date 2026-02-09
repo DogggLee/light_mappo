@@ -9,6 +9,8 @@
 import sys
 import os
 import socket
+import shutil
+import yaml
 import setproctitle
 import numpy as np
 from pathlib import Path
@@ -34,7 +36,7 @@ def make_train_env(all_args):
 
             from envs.env_continuous import ContinuousActionEnv
 
-            env = ContinuousActionEnv()
+            env = ContinuousActionEnv(all_args)
 
             # from envs.env_discrete import DiscreteActionEnv
 
@@ -55,7 +57,7 @@ def make_eval_env(all_args):
             # TODO Important, here you can choose continuous or discrete action space by uncommenting the above two lines or the below two lines.
             from envs.env_continuous import ContinuousActionEnv
 
-            env = ContinuousActionEnv()
+            env = ContinuousActionEnv(all_args)
             # from envs.env_discrete import DiscreteActionEnv
             # env = DiscreteActionEnv()
             env.seed(all_args.seed + rank * 1000)
@@ -66,10 +68,26 @@ def make_eval_env(all_args):
     return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
 
 
+def _apply_yaml_defaults(parser, yaml_data):
+    if not isinstance(yaml_data, dict):
+        return
+    parser_defaults = vars(parser.parse_args([]))
+    updates = {key: value for key, value in yaml_data.items() if key in parser_defaults}
+    if updates:
+        parser.set_defaults(**updates)
+
+
 def parse_args(args, parser):
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
     parser.add_argument("--scenario_name", type=str, default="MyEnv", help="Which scenario to run on")
     parser.add_argument("--num_landmarks", type=int, default=3)
     parser.add_argument("--num_agents", type=int, default=2, help="number of players")
+
+    config_args = parser.parse_known_args(args)[0]
+    if config_args.config:
+        with open(config_args.config, "r", encoding="utf-8") as handle:
+            yaml_data = yaml.safe_load(handle) or {}
+        _apply_yaml_defaults(parser, yaml_data)
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -133,6 +151,13 @@ def main(args):
     if not run_dir.exists():
         os.makedirs(str(run_dir))
 
+    config_output = run_dir / "config.yaml"
+    if all_args.config:
+        shutil.copyfile(all_args.config, config_output)
+    else:
+        with open(config_output, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(vars(all_args), handle, sort_keys=False, allow_unicode=True)
+
     setproctitle.setproctitle(
         str(all_args.algorithm_name)
         + "-"
@@ -151,6 +176,13 @@ def main(args):
     # env init
     envs = make_train_env(all_args)
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None
+    if all_args.env_name == "uav_encirclement":
+        max_hunters = all_args.max_hunters if all_args.max_hunters is not None else all_args.num_hunters
+        max_blockers = (
+            all_args.max_blockers if all_args.max_blockers is not None else all_args.num_blockers
+        )
+        max_targets = all_args.max_targets if all_args.max_targets is not None else all_args.num_targets
+        all_args.num_agents = max_hunters + max_blockers + max_targets
     num_agents = all_args.num_agents
 
     config = {
