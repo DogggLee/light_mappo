@@ -12,7 +12,13 @@ import numpy as np
 import setproctitle
 import torch
 
-from config import get_config, parse_args_with_yaml
+# Get the parent directory of the current file
+parent_dir = os.path.abspath(os.path.join(os.getcwd(), "."))
+
+# Append the parent directory to sys.path, otherwise the following import will fail
+sys.path.append(parent_dir)
+
+from parameters import get_config, parse_args_with_yaml
 from envs.env_wrappers import DummyVecEnv
 from envs.uav_pursuit_env import MultiUavPursuitEnv
 from runner.shared.uav_pursuit_runner import UavPursuitRunner
@@ -79,7 +85,8 @@ def parse_args(args, parser):
 def main(args):
     parser = get_config()
     all_args, config_path = parse_args(args, parser)
-
+    
+    breakpoint()
     if all_args.algorithm_name == "rmappo":
         assert (
             all_args.use_recurrent_policy or all_args.use_naive_recurrent_policy

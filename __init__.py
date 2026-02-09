@@ -1,4 +1,4 @@
-from . import algorithms, envs, runner, scripts, utils, config
+from . import algorithms, envs, parameters, runner, scripts, utils
 
 
 __version__ = "0.1.0"
@@ -9,5 +9,5 @@ __all__ = [
     "runner",
     "scripts",
     "utils",
-    "config",
+    "parameters",
 ]
