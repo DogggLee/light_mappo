@@ -2,6 +2,7 @@ import gym
 from gym import spaces
 import numpy as np
 from envs.env_core import EnvCore
+from envs.uav_encirclement_env import UAVEncirclementEnv
 
 
 class ContinuousActionEnv(object):
@@ -10,8 +11,11 @@ class ContinuousActionEnv(object):
     Wrapper for continuous action environment.
     """
 
-    def __init__(self):
-        self.env = EnvCore()
+    def __init__(self, all_args=None):
+        if all_args is not None and getattr(all_args, "env_name", "") == "uav_encirclement":
+            self.env = UAVEncirclementEnv(all_args)
+        else:
+            self.env = EnvCore()
         self.num_agent = self.env.agent_num
 
         self.signal_obs_dim = self.env.obs_dim

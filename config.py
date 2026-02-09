@@ -224,6 +224,48 @@ def get_config():
         default=False,
         help="Whether to use global state or concatenated obs",
     )
+    parser.add_argument("--num_hunters", type=int, default=2, help="Number of hunter agents")
+    parser.add_argument("--num_blockers", type=int, default=1, help="Number of blocker agents")
+    parser.add_argument("--num_targets", type=int, default=1, help="Number of target agents")
+    parser.add_argument("--min_hunters", type=int, default=None, help="Min hunters for regen")
+    parser.add_argument("--min_blockers", type=int, default=None, help="Min blockers for regen")
+    parser.add_argument("--min_targets", type=int, default=None, help="Min targets for regen")
+    parser.add_argument("--max_hunters", type=int, default=None, help="Max hunters for regen")
+    parser.add_argument("--max_blockers", type=int, default=None, help="Max blockers for regen")
+    parser.add_argument("--max_targets", type=int, default=None, help="Max targets for regen")
+    parser.add_argument(
+        "--use_presence_mask",
+        action="store_true",
+        default=True,
+        help="Whether to append presence masks in observations",
+    )
+    parser.add_argument(
+        "--world_size",
+        type=float,
+        default=10.0,
+        help="Half-length of square world boundary for UAV encirclement",
+    )
+    parser.add_argument("--max_episode_steps", type=int, default=300, help="Max steps per episode")
+    parser.add_argument("--dt", type=float, default=0.1, help="Simulation timestep")
+    parser.add_argument("--max_accel", type=float, default=2.0, help="Max acceleration magnitude")
+    parser.add_argument("--hunter_max_speed", type=float, default=2.5, help="Max speed for hunters")
+    parser.add_argument("--blocker_max_speed", type=float, default=1.8, help="Max speed for blockers")
+    parser.add_argument("--target_max_speed", type=float, default=2.0, help="Max speed for targets")
+    parser.add_argument("--hunter_perception", type=float, default=8.0, help="Perception range of hunters")
+    parser.add_argument("--blocker_perception", type=float, default=10.0, help="Perception range of blockers")
+    parser.add_argument("--target_perception", type=float, default=6.0, help="Perception range of targets")
+    parser.add_argument(
+        "--neighbor_mode",
+        type=str,
+        default="knn",
+        choices=["knn", "mean"],
+        help="Neighbor aggregation mode for observations",
+    )
+    parser.add_argument("--neighbor_k", type=int, default=3, help="Number of nearest neighbors to include")
+    parser.add_argument("--capture_distance", type=float, default=0.6, help="Capture distance threshold")
+    parser.add_argument("--capture_hold_steps", type=int, default=5, help="Steps to hold for capture")
+    parser.add_argument("--obstacle_count", type=int, default=0, help="Number of circular obstacles")
+    parser.add_argument("--obstacle_radius", type=float, default=0.8, help="Radius of obstacles")
 
     # replay buffer parameters
     parser.add_argument("--episode_length", type=int, default=200, help="Max length for any episode")
