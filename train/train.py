@@ -95,16 +95,25 @@ def main(args):
 
     # cuda
     if all_args.cuda and torch.cuda.is_available():
-        print("choose to use gpu...")
-        device = torch.device("cuda:0")
-        torch.set_num_threads(all_args.n_training_threads)
-        if all_args.cuda_deterministic:
-            torch.backends.cudnn.benchmark = False
-            torch.backends.cudnn.deterministic = True
+        try:
+            torch.cuda.set_device(0)
+            torch.cuda.init()
+            # Force a small matmul to verify cublasLt init works.
+            _ = (torch.randn(1, 1, device="cuda") @ torch.randn(1, 1, device="cuda"))
+            print("choose to use gpu...")
+            device = torch.device("cuda:0")
+            if all_args.cuda_deterministic:
+                torch.backends.cudnn.benchmark = False
+                torch.backends.cudnn.deterministic = True
+        except Exception as exc:
+            print(f"cuda init failed, fallback to cpu: {exc}")
+            device = torch.device("cpu")
+            all_args.cuda = False
     else:
         print("choose to use cpu...")
         device = torch.device("cpu")
-        torch.set_num_threads(all_args.n_training_threads)
+
+    torch.set_num_threads(all_args.n_training_threads)
 
     # run dir
     run_dir = (
@@ -149,7 +158,8 @@ def main(args):
 
     # seed
     torch.manual_seed(all_args.seed)
-    torch.cuda.manual_seed_all(all_args.seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(all_args.seed)
     np.random.seed(all_args.seed)
 
     # env init

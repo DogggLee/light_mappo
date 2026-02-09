@@ -5,9 +5,12 @@ import yaml
 
 
 def _extract_positional_config(args):
+    breakpoint()
     for index, value in enumerate(args):
+        print(index, value)
         if not value.startswith("-") and value.endswith((".yml", ".yaml")):
             return args[:index] + args[index + 1 :], value
+    breakpoint()
     return args, None
 
 
@@ -22,33 +25,50 @@ def _load_yaml_config(config_path):
     return data
 
 
+def _iter_yaml_leaf_items(node, prefix=""):
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        key_path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            yield from _iter_yaml_leaf_items(value, key_path)
+        else:
+            yield key_path, key, value
+
+
 def _apply_yaml_defaults(parser, yaml_data):
     if not yaml_data:
         return []
     parser_dests = {action.dest for action in parser._actions if action.dest != "help"}
     unknown_keys = []
     overrides = {}
-    for key, value in yaml_data.items():
-        if isinstance(value, dict):
-            for nested_key, nested_value in value.items():
-                if nested_key in parser_dests:
-                    overrides[nested_key] = nested_value
-                else:
-                    unknown_keys.append(f"{key}.{nested_key}")
-            continue
+    duplicate_keys = {}
+    for full_path, key, value in _iter_yaml_leaf_items(yaml_data):
         if key in parser_dests:
+            if key in overrides and overrides[key] != value:
+                duplicate_keys.setdefault(key, []).append(full_path)
             overrides[key] = value
         else:
-            unknown_keys.append(key)
+            unknown_keys.append(full_path)
+    if duplicate_keys:
+        duplicate_messages = []
+        for key, paths in duplicate_keys.items():
+            duplicate_messages.append(f"{key}: {', '.join(paths)}")
+        raise ValueError(
+            "Duplicate YAML leaf keys with conflicting values found. "
+            + "; ".join(duplicate_messages)
+        )
     if overrides:
         parser.set_defaults(**overrides)
     return unknown_keys
 
 
-def parse_args_with_yaml(args, parser):
-    args, positional_config = _extract_positional_config(list(args))
+def parse_args_with_yaml(args, parser, default_config=None, require_config=False):
+    # args, positional_config = _extract_positional_config(list(args))
     known_args = parser.parse_known_args(args)[0]
-    config_path = known_args.config or positional_config
+    config_path = known_args.config or default_config
+    if require_config and not config_path:
+        raise ValueError("A YAML config file is required. Please pass --config <path>.")
     yaml_data = _load_yaml_config(config_path)
     unknown_keys = _apply_yaml_defaults(parser, yaml_data)
     if unknown_keys:

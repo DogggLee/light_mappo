@@ -207,6 +207,8 @@ class EnvRunner(Runner):
             share_obs = np.expand_dims(share_obs, 1).repeat(self.num_agents, axis=1)
         else:
             share_obs = obs
+        if rewards.ndim == 2:
+            rewards = rewards[..., None]
 
         self.buffer.insert(
             share_obs,

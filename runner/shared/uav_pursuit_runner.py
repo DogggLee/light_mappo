@@ -105,24 +105,32 @@ class UavPursuitRunner(EnvRunner):
 
     @torch.no_grad()
     def _collect_episode_frames(self, episode_idx):
-        env = MultiUavPursuitEnv(all_args=self.all_args)
+        env = MultiUavPursuitEnv(
+            num_hunters=self.all_args.num_hunters,
+            num_blockers=self.all_args.num_blockers,
+            world_size=self.all_args.world_size,
+            dt=self.all_args.dt,
+            capture_radius=self.all_args.capture_radius,
+            capture_steps=self.all_args.capture_steps,
+            max_steps=self.episode_length,
+            seed=self.all_args.seed,
+        )
         obs = env.reset()
 
-        world = env.world
-        role_groups = world.role_groups
+        role_groups = env.role_groups
         hunter_indices = role_groups.get("hunter", [])
         target_index = role_groups.get("target", [None])[0]
 
-        positions = {idx: [agent.state.p_pos.copy()] for idx, agent in enumerate(world.agents)}
+        positions = {idx: [env.positions[idx].copy()] for idx in range(env.agent_num)}
         capture = False
 
-        rnn_states = np.zeros((env.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
-        masks = np.ones((env.num_agents, 1), dtype=np.float32)
+        rnn_states = np.zeros((env.agent_num, self.recurrent_N, self.hidden_size), dtype=np.float32)
+        masks = np.ones((env.agent_num, 1), dtype=np.float32)
 
         frames = [
             self._draw_frame(
                 positions,
-                world.world_size,
+                env.world_size,
                 hunter_indices,
                 target_index,
                 capture,
@@ -152,13 +160,13 @@ class UavPursuitRunner(EnvRunner):
             obs, rewards, dones, infos = env.step(actions_env)
             capture = capture or any(info.get("capture", False) for info in infos)
 
-            for idx, agent in enumerate(world.agents):
-                positions[idx].append(agent.state.p_pos.copy())
+            for idx in range(env.agent_num):
+                positions[idx].append(env.positions[idx].copy())
 
             frames.append(
                 self._draw_frame(
                     positions,
-                    world.world_size,
+                    env.world_size,
                     hunter_indices,
                     target_index,
                     capture,
@@ -220,7 +228,14 @@ class UavPursuitRunner(EnvRunner):
 
         canvas = FigureCanvas(fig)
         canvas.draw()
-        image = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        width, height = fig.canvas.get_width_height()
+        try:
+            buf = canvas.tostring_rgb()
+            image = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
+        except AttributeError:
+            # Matplotlib versions without tostring_rgb; use ARGB and convert.
+            buf = canvas.tostring_argb()
+            image = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 4)
+            image = image[:, :, [1, 2, 3]]  # ARGB -> RGB
         plt.close(fig)
         return image

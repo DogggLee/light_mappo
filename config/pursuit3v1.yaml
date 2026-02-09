@@ -1,6 +1,6 @@
 # Experiment settings
 exp:
-  algorithm_name: MAPPO
+  algorithm_name: mappo
   experiment_name: Hunter3_Target1
   seed: 1
   cuda: true
@@ -17,6 +17,18 @@ env:
   env_name: Gym
   use_obs_instead_of_state: false # use global state instead of concatenated local obs
   episode_length: 200 # max steps per episode
+
+# UAV pursuit scenario settings
+uav_pursuit:
+  scenario_name: uav_pursuit
+  num_hunters: 3
+  num_blockers: 0
+  world_size: 1.0
+  dt: 0.1
+  capture_radius: 0.12
+  capture_steps: 5
+  gif_interval: 10
+  gif_frame_duration: 0.1
 
 # Model/network settings
 model:
@@ -88,15 +100,3 @@ render:
 # Pretrained model
 pretrained:
   model_dir: null
-
-# UAV pursuit scenario settings
-uav_pursuit:
-  scenario_name: uav_pursuit
-  num_hunters: 3
-  num_blockers: 0
-  world_size: 1.0
-  dt: 0.1
-  capture_radius: 0.12
-  capture_steps: 5
-  gif_interval: 10
-  gif_frame_duration: 0.1

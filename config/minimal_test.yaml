@@ -1,7 +1,7 @@
 # Experiment settings
-exp:
-  algorithm_name: MAPPO
-  experiment_name: Hunter3_Target1
+experiment:
+  algorithm_name: mappo
+  experiment_name: Minimal_test
   seed: 1
   cuda: true
   cuda_deterministic: true
