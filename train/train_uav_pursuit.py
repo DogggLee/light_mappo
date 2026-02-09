@@ -12,7 +12,7 @@ import numpy as np
 import setproctitle
 import torch
 
-from config import get_config
+from config import get_config, parse_args_with_yaml
 from envs.env_wrappers import DummyVecEnv
 from envs.uav_pursuit_env import MultiUavPursuitEnv
 from runner.shared.uav_pursuit_runner import UavPursuitRunner
@@ -21,8 +21,16 @@ from runner.shared.uav_pursuit_runner import UavPursuitRunner
 def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            env = MultiUavPursuitEnv(all_args=all_args)
-            env.seed(all_args.seed + rank * 1000)
+            env = MultiUavPursuitEnv(
+                num_hunters=all_args.num_hunters,
+                num_blockers=all_args.num_blockers,
+                world_size=all_args.world_size,
+                dt=all_args.dt,
+                capture_radius=all_args.capture_radius,
+                capture_steps=all_args.capture_steps,
+                max_steps=all_args.episode_length,
+                seed=all_args.seed + rank * 1000,
+            )
             return env
 
         return init_env
@@ -33,8 +41,16 @@ def make_train_env(all_args):
 def make_eval_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            env = MultiUavPursuitEnv(all_args=all_args)
-            env.seed(all_args.seed + rank * 1000)
+            env = MultiUavPursuitEnv(
+                num_hunters=all_args.num_hunters,
+                num_blockers=all_args.num_blockers,
+                world_size=all_args.world_size,
+                dt=all_args.dt,
+                capture_radius=all_args.capture_radius,
+                capture_steps=all_args.capture_steps,
+                max_steps=all_args.episode_length,
+                seed=all_args.seed + rank * 1000,
+            )
             return env
 
         return init_env
@@ -53,16 +69,16 @@ def parse_args(args, parser):
     parser.add_argument("--gif_interval", type=int, default=10)
     parser.add_argument("--gif_frame_duration", type=float, default=0.1)
 
-    all_args = parser.parse_known_args(args)[0]
+    all_args, config_path = parse_args_with_yaml(args, parser)
     all_args.env_name = "MPE"
     all_args.num_agents = all_args.num_hunters + all_args.num_blockers + 1
     all_args.share_policy = True
-    return all_args
+    return all_args, config_path
 
 
 def main(args):
     parser = get_config()
-    all_args = parse_args(args, parser)
+    all_args, config_path = parse_args(args, parser)
 
     if all_args.algorithm_name == "rmappo":
         assert (
@@ -115,6 +131,10 @@ def main(args):
     run_dir = run_dir / curr_run
     if not run_dir.exists():
         os.makedirs(str(run_dir))
+    if config_path:
+        config_file = Path(config_path)
+        config_target = run_dir / config_file.name
+        config_target.write_text(config_file.read_text(encoding="utf-8"), encoding="utf-8")
 
     setproctitle.setproctitle(
         str(all_args.algorithm_name)

@@ -1,4 +1,60 @@
 import argparse
+from pathlib import Path
+
+import yaml
+
+
+def _extract_positional_config(args):
+    for index, value in enumerate(args):
+        if not value.startswith("-") and value.endswith((".yml", ".yaml")):
+            return args[:index] + args[index + 1 :], value
+    return args, None
+
+
+def _load_yaml_config(config_path):
+    if not config_path:
+        return {}
+    config_file = Path(config_path)
+    with config_file.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML config must be a mapping, got: {type(data).__name__}")
+    return data
+
+
+def _apply_yaml_defaults(parser, yaml_data):
+    if not yaml_data:
+        return []
+    parser_dests = {action.dest for action in parser._actions if action.dest != "help"}
+    unknown_keys = []
+    overrides = {}
+    for key, value in yaml_data.items():
+        if isinstance(value, dict):
+            for nested_key, nested_value in value.items():
+                if nested_key in parser_dests:
+                    overrides[nested_key] = nested_value
+                else:
+                    unknown_keys.append(f"{key}.{nested_key}")
+            continue
+        if key in parser_dests:
+            overrides[key] = value
+        else:
+            unknown_keys.append(key)
+    if overrides:
+        parser.set_defaults(**overrides)
+    return unknown_keys
+
+
+def parse_args_with_yaml(args, parser):
+    args, positional_config = _extract_positional_config(list(args))
+    known_args = parser.parse_known_args(args)[0]
+    config_path = known_args.config or positional_config
+    yaml_data = _load_yaml_config(config_path)
+    unknown_keys = _apply_yaml_defaults(parser, yaml_data)
+    if unknown_keys:
+        print(f"Warning: ignoring unknown YAML keys: {', '.join(unknown_keys)}")
+    all_args = parser.parse_known_args(args)[0]
+    return all_args, config_path
 
 
 def get_config():
@@ -156,6 +212,7 @@ def get_config():
     parser = argparse.ArgumentParser(
         description="onpolicy", formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
 
     # prepare parameters
     parser.add_argument("--algorithm_name", type=str, default="mappo", choices=["rmappo", "mappo"])
