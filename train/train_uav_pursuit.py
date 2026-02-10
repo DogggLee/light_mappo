@@ -134,7 +134,7 @@ def main(args):
         Path(os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + "/results")
         / all_args.env_name
         / all_args.scenario_name
-        / f"{all_args.algorithm_name}_{all_args.policy_mode}"
+        / all_args.algorithm_name
         / all_args.experiment_name
     )
     if not run_dir.exists():
