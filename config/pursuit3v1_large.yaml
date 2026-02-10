@@ -31,6 +31,10 @@ uav_pursuit:
   gif_frame_duration: 3.0
   target_policy_source: train
   target_patrol_path: config/target_patrol_route.json
+  target_patrol_names: null
+  target_patrol_switch_interval: 0
+  eval_random_patrol_routes: 0
+  eval_random_patrol_points: 4
   max_speed_hunter: 1.2
   max_speed_blocker: 0.9
   max_speed_target: 1.0

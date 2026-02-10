@@ -49,6 +49,16 @@ class DummyVecEnv():
         obs = [env.reset() for env in self.envs] # [env_num, agent_num, obs_dim]
         return np.array(obs)
 
+    def set_target_patrol_route(self, route_name):
+        for env in self.envs:
+            if hasattr(env, "set_target_patrol_route"):
+                env.set_target_patrol_route(route_name)
+
+    def set_target_patrol_waypoints(self, waypoints, route_name=None):
+        for env in self.envs:
+            if hasattr(env, "set_target_patrol_waypoints"):
+                env.set_target_patrol_waypoints(waypoints, route_name=route_name)
+
     def close(self):
         for env in self.envs:
             env.close()

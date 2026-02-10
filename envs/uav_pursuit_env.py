@@ -25,6 +25,7 @@ class MultiUavPursuitEnv:
         perception_hunter=0.8,
         perception_blocker=1.2,
         perception_target=0.8,
+        target_patrol_names=None,
     ):
         if num_hunters < 1:
             raise ValueError("num_hunters must be >= 1")
@@ -44,7 +45,11 @@ class MultiUavPursuitEnv:
         self.np_random = np.random.RandomState(seed)
 
         self.target_policy_source = target_policy_source
-        self.target_patrol_waypoints = self._load_patrol_waypoints(target_patrol_path)
+        self.target_patrol_names = self._normalize_name_list(target_patrol_names)
+        self.patrol_routes, self.target_patrol_name, self.target_patrol_waypoints = self._load_patrol_routes(
+            target_patrol_path,
+            self.target_patrol_names,
+        )
         self._target_patrol_idx = 0
 
         self.role_names = ["hunter"] * self.num_hunters + ["blocker"] * self.num_blockers + ["target"]
@@ -80,19 +85,95 @@ class MultiUavPursuitEnv:
             for _ in range(self.agent_num)
         ]
 
-    def _load_patrol_waypoints(self, target_patrol_path):
-        if self.target_policy_source != "patrol":
+    @staticmethod
+    def _normalize_name_list(names):
+        if names is None:
             return None
+        if isinstance(names, (list, tuple)):
+            cleaned = [str(n).strip() for n in names if str(n).strip()]
+            return cleaned or None
+        text = str(names).strip()
+        if not text:
+            return None
+        return [n.strip() for n in text.replace(";", ",").split(",") if n.strip()]
+
+    def _convert_waypoints(self, waypoints):
+        arr = np.asarray(waypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < 2:
+            raise ValueError("巡逻路径至少需要2个二维路点")
+        min_val = float(np.min(arr))
+        max_val = float(np.max(arr))
+        if 0.0 <= min_val and max_val <= 1.0:
+            arr = (arr * 2.0 - 1.0) * self.world_size
+        elif -1.0 <= min_val and max_val <= 1.0:
+            arr = arr * self.world_size
+        return arr
+
+    def _load_patrol_routes(self, target_patrol_path, preferred_names):
+        if self.target_policy_source != "patrol":
+            return {}, None, None
         if target_patrol_path is None:
             raise ValueError("target_policy_source=patrol 时必须提供 target_patrol_path")
         route_file = Path(target_patrol_path)
         data = json.loads(route_file.read_text(encoding="utf-8"))
-        waypoints = np.asarray(data.get("waypoints", data), dtype=np.float32)
-        if waypoints.ndim != 2 or waypoints.shape[1] != 2 or waypoints.shape[0] < 2:
-            raise ValueError("巡逻路径至少需要2个二维路点")
-        if np.min(waypoints) < 0.0 or np.max(waypoints) > 1.0:
-            waypoints = np.clip((waypoints + 1.0) / 2.0, 0.0, 1.0)
-        return (waypoints * 2.0 - 1.0) * self.world_size
+        routes = {}
+
+        if isinstance(data, dict) and "routes" in data:
+            routes_data = data["routes"]
+            if isinstance(routes_data, dict):
+                for name, payload in routes_data.items():
+                    waypoints = payload.get("waypoints", payload)
+                    routes[str(name)] = self._convert_waypoints(waypoints)
+            elif isinstance(routes_data, list):
+                for item in routes_data:
+                    if not isinstance(item, dict):
+                        continue
+                    name = item.get("name") or item.get("alias")
+                    waypoints = item.get("waypoints")
+                    if name is None or waypoints is None:
+                        continue
+                    routes[str(name)] = self._convert_waypoints(waypoints)
+        else:
+            waypoints = data.get("waypoints", data) if isinstance(data, dict) else data
+            routes["default"] = self._convert_waypoints(waypoints)
+
+        if not routes:
+            raise ValueError("未找到可用的巡逻路径")
+
+        chosen_name = None
+        if preferred_names:
+            for name in preferred_names:
+                if name in routes:
+                    chosen_name = name
+                    break
+            if chosen_name is None:
+                raise ValueError(f"指定的巡逻路线名称不存在: {preferred_names}")
+        else:
+            chosen_name = next(iter(routes.keys()))
+
+        return routes, chosen_name, routes[chosen_name]
+
+    def set_target_patrol_route(self, route_name):
+        if self.target_policy_source != "patrol":
+            return
+        if route_name not in self.patrol_routes:
+            raise ValueError(f"巡逻路线不存在: {route_name}")
+        self.target_patrol_name = route_name
+        self.target_patrol_waypoints = self.patrol_routes[route_name]
+        self._target_patrol_idx = 0
+
+    def set_target_patrol_waypoints(self, waypoints, route_name=None):
+        if self.target_policy_source != "patrol":
+            return
+        converted = self._convert_waypoints(waypoints)
+        name = route_name or self.target_patrol_name or "custom"
+        self.patrol_routes[name] = converted
+        self.target_patrol_name = name
+        self.target_patrol_waypoints = converted
+        self._target_patrol_idx = 0
+
+    def get_patrol_route_names(self):
+        return list(self.patrol_routes.keys())
 
     def _calc_obs_dim(self):
         return 4 + (self.agent_num - 1) * 3
@@ -197,6 +278,7 @@ class MultiUavPursuitEnv:
                 "capture": capture,
                 "role_groups": self.role_groups,
                 "target_policy_source": self.target_policy_source,
+                "target_patrol_name": self.target_patrol_name,
             })
         return infos
 

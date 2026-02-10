@@ -301,6 +301,10 @@ def get_config():
 
     parser.add_argument("--target_policy_source", type=str, default="train", choices=["train", "patrol"])
     parser.add_argument("--target_patrol_path", type=str, default=None)
+    parser.add_argument("--target_patrol_names", type=str, default=None, help="Comma-separated patrol route names")
+    parser.add_argument("--target_patrol_switch_interval", type=int, default=0, help="Episodes between patrol route switches (0 to disable)")
+    parser.add_argument("--eval_random_patrol_routes", type=int, default=0, help="Number of random patrol routes for eval (0 to disable)")
+    parser.add_argument("--eval_random_patrol_points", type=int, default=4, help="Number of waypoints per random eval patrol route")
 
     # replay buffer parameters
     parser.add_argument("--episode_length", type=int, default=200, help="Max length for any episode")

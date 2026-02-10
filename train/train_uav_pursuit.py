@@ -126,6 +126,7 @@ def make_train_env(all_args):
                 seed=all_args.seed + rank * 1000,
                 target_policy_source=all_args.target_policy_source,
                 target_patrol_path=all_args.target_patrol_path,
+                target_patrol_names=all_args.target_patrol_names,
                 **role_params,
             )
             return env
@@ -151,6 +152,7 @@ def make_eval_env(all_args):
                 seed=all_args.seed + rank * 1000,
                 target_policy_source=all_args.target_policy_source,
                 target_patrol_path=all_args.target_patrol_path,
+                target_patrol_names=all_args.target_patrol_names,
                 **role_params,
             )
             return env

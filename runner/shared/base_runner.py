@@ -1,3 +1,5 @@
+import csv
+import json
 import os
 import numpy as np
 import torch
@@ -45,6 +47,9 @@ class Runner(object):
         self.writter = SummaryWriter(self.log_dir)
         self.save_dir = str(self.run_dir / "models")
         os.makedirs(self.save_dir, exist_ok=True)
+        self.metrics_path = self.run_dir / "metrics.json"
+        self.eval_metrics_csv = self.run_dir / "metrics_eval.csv"
+        self.metrics = self._load_metrics()
 
         self.policy_share = getattr(self.all_args, "policy_share", True)
         self.target_policy_source = getattr(self.all_args, "target_policy_source", "train")
@@ -151,5 +156,49 @@ class Runner(object):
 
     def log_env(self, env_infos, total_num_steps):
         for k, v in env_infos.items():
-            if len(v) > 0:
-                self.writter.add_scalars(k, {k: np.mean(v)}, total_num_steps)
+            if np.isscalar(v):
+                self.writter.add_scalars(k, {k: float(v)}, total_num_steps)
+            else:
+                if len(v) > 0:
+                    self.writter.add_scalars(k, {k: np.mean(v)}, total_num_steps)
+
+    def _load_metrics(self):
+        if self.metrics_path.exists():
+            try:
+                return json.loads(self.metrics_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {"train": [], "eval": []}
+
+    def _save_metrics(self):
+        self.metrics_path.write_text(json.dumps(self.metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def record_train_metrics(self, total_num_steps, average_episode_rewards):
+        self.metrics.setdefault("train", []).append({
+            "total_num_steps": int(total_num_steps),
+            "average_episode_rewards": float(average_episode_rewards),
+        })
+        self._save_metrics()
+
+    def record_eval_metrics(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps):
+        self.metrics.setdefault("eval", []).append({
+            "total_num_steps": int(total_num_steps),
+            "eval_average_episode_rewards": float(eval_average_episode_rewards),
+            "capture_success_rate": float(capture_success_rate),
+            "avg_capture_steps": float(avg_capture_steps) if avg_capture_steps is not None else None,
+        })
+        self._save_metrics()
+        self._append_eval_metrics_csv(total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps)
+
+    def _append_eval_metrics_csv(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps):
+        write_header = not self.eval_metrics_csv.exists()
+        with self.eval_metrics_csv.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(["total_num_steps", "eval_average_episode_rewards", "capture_success_rate", "avg_capture_steps"])
+            writer.writerow([
+                int(total_num_steps),
+                float(eval_average_episode_rewards),
+                float(capture_success_rate),
+                "" if avg_capture_steps is None else float(avg_capture_steps),
+            ])
