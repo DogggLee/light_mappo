@@ -31,12 +31,12 @@ uav_pursuit:
   gif_frame_duration: 0.1
   target_policy_source: train
   target_patrol_path: config/target_patrol_route.json
-  max_speed_hunter: 1.2
-  max_speed_blocker: 0.9
-  max_speed_target: 1.0
-  perception_hunter: 0.8
-  perception_blocker: 1.2
-  perception_target: 0.8
+  max_speed_hunter: 0.1
+  max_speed_blocker: 0.1
+  max_speed_target: 0.1
+  perception_hunter: 0.25
+  perception_blocker: 0.3
+  perception_target: 0.3
   interactive_perception_confirm: true
 
 # Model/network settings
