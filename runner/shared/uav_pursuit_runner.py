@@ -79,6 +79,12 @@ class UavPursuitRunner(EnvRunner):
             seed=self.all_args.seed,
             target_policy_source=self.all_args.target_policy_source,
             target_patrol_path=self.all_args.target_patrol_path,
+            max_speed_hunter=self.all_args.max_speed_hunter,
+            max_speed_blocker=self.all_args.max_speed_blocker,
+            max_speed_target=self.all_args.max_speed_target,
+            perception_hunter=self.all_args.perception_hunter,
+            perception_blocker=self.all_args.perception_blocker,
+            perception_target=self.all_args.perception_target,
         )
         obs = env.reset()
 

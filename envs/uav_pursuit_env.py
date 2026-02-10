@@ -19,6 +19,12 @@ class MultiUavPursuitEnv:
         seed=None,
         target_policy_source="train",
         target_patrol_path=None,
+        max_speed_hunter=1.2,
+        max_speed_blocker=0.9,
+        max_speed_target=1.0,
+        perception_hunter=0.8,
+        perception_blocker=1.2,
+        perception_target=0.8,
     ):
         if num_hunters < 1:
             raise ValueError("num_hunters must be >= 1")
@@ -48,8 +54,16 @@ class MultiUavPursuitEnv:
             "target": [self.agent_num - 1],
         }
 
-        self.max_speeds = {"hunter": 1.2, "blocker": 0.9, "target": 1.0}
-        self.perception_ranges = {"hunter": 0.8, "blocker": 1.2, "target": 0.8}
+        self.max_speeds = {
+            "hunter": float(max_speed_hunter),
+            "blocker": float(max_speed_blocker),
+            "target": float(max_speed_target),
+        }
+        self.perception_ranges = {
+            "hunter": float(perception_hunter),
+            "blocker": float(perception_blocker),
+            "target": float(perception_target),
+        }
 
         self.positions = np.zeros((self.agent_num, 2), dtype=np.float32)
         self.velocities = np.zeros((self.agent_num, 2), dtype=np.float32)
