@@ -237,6 +237,7 @@ def main(args):
     curr_run = "run1" if len(exst_run_nums) == 0 else f"run{max(exst_run_nums) + 1}"
     run_dir = run_dir / curr_run
     os.makedirs(str(run_dir), exist_ok=True)
+    print(f"Save results to {str(run_dir)}")
 
     if config_path:
         config_file = Path(config_path)

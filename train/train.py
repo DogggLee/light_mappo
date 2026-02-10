@@ -23,7 +23,7 @@ sys.path.append(parent_dir)
 from parameters import get_config, parse_args_with_yaml
 from envs.env_wrappers import DummyVecEnv
 
-"""Train script for MPEs."""
+"""Train script for Gyms."""
 
 
 def make_train_env(all_args):
