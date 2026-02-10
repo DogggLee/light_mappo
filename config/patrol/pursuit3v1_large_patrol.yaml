@@ -1,7 +1,7 @@
 # Experiment settings
 exp:
   algorithm_name: mappo
-  experiment_name: Hunter3_Target1
+  experiment_name: Hunter3_Target1_patrol
   seed: 1
   cuda: true
   cuda_deterministic: true
@@ -29,10 +29,10 @@ uav_pursuit:
   capture_steps: 30
   gif_interval: 10
   gif_frame_duration: 3.0
-  target_policy_source: train
-  target_patrol_path: config/target_patrol_route.json
-  target_patrol_names: null
-  target_patrol_switch_interval: 0
+  target_policy_source: patrol
+  target_patrol_path: config/target_patrol_routes.json
+  target_patrol_names: ['square', 'ring', 'vert_trig', 'hori_trig']
+  target_patrol_switch_interval: 50
   eval_random_patrol_routes: 0
   eval_random_patrol_points: 4
   max_speed_hunter: 0.5
