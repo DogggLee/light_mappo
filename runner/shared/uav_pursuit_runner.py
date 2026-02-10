@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.collections import LineCollection
 
 from envs.uav_pursuit_env import MultiUavPursuitEnv
 from runner.shared.env_runner import EnvRunner
@@ -16,8 +17,6 @@ def _t2n(x):
 
 
 class UavPursuitRunner(EnvRunner):
-    """Runner with GIF logging for the UAV pursuit MPE scenario."""
-
     def __init__(self, config):
         super().__init__(config)
         self.gif_interval = getattr(self.all_args, "gif_interval", 10)
@@ -27,43 +26,21 @@ class UavPursuitRunner(EnvRunner):
 
     def run(self):
         self.warmup()
-
         start = time.time()
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
 
         for episode in range(episodes):
             if self.use_linear_lr_decay:
-                self.trainer.policy.lr_decay(episode, episodes)
+                for group_name in self.group_order:
+                    self.trainers[group_name].policy.lr_decay(episode, episodes)
 
             for step in range(self.episode_length):
-                (
-                    values,
-                    actions,
-                    action_log_probs,
-                    rnn_states,
-                    rnn_states_critic,
-                    actions_env,
-                ) = self.collect(step)
-
+                values, actions, action_log_probs, rnn_states, rnn_states_critic, actions_env = self.collect(step)
                 obs, rewards, dones, infos = self.envs.step(actions_env)
-
-                data = (
-                    obs,
-                    rewards,
-                    dones,
-                    infos,
-                    values,
-                    actions,
-                    action_log_probs,
-                    rnn_states,
-                    rnn_states_critic,
-                )
-
-                self.insert(data)
+                self.insert((obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic))
 
             self.compute()
             train_infos = self.train()
-
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
 
             if episode % self.save_interval == 0 or episode == episodes - 1:
@@ -73,22 +50,8 @@ class UavPursuitRunner(EnvRunner):
                 elapsed = time.time() - start
                 fps = int(total_num_steps / elapsed) if elapsed > 0 else 0
                 print(
-                    "\n Scenario {} Algo {} Exp {} updates {}/{} episodes, total num timesteps {}/{}, FPS {}.\n".format(
-                        self.all_args.scenario_name,
-                        self.algorithm_name,
-                        self.experiment_name,
-                        episode,
-                        episodes,
-                        total_num_steps,
-                        self.num_env_steps,
-                        fps,
-                    )
+                    f"\n Scenario {self.all_args.scenario_name} Algo {self.algorithm_name} Exp {self.experiment_name} updates {episode}/{episodes} episodes, total num timesteps {total_num_steps}/{self.num_env_steps}, FPS {fps}.\n"
                 )
-
-                train_infos["average_episode_rewards"] = (
-                    np.mean(self.buffer.rewards) * self.episode_length
-                )
-                print("average episode rewards is {}".format(train_infos["average_episode_rewards"]))
                 self.log_train(train_infos, total_num_steps)
 
             if (episode + 1) % self.gif_interval == 0:
@@ -114,117 +77,115 @@ class UavPursuitRunner(EnvRunner):
             capture_steps=self.all_args.capture_steps,
             max_steps=self.episode_length,
             seed=self.all_args.seed,
+            target_policy_source=self.all_args.target_policy_source,
+            target_patrol_path=self.all_args.target_patrol_path,
+            max_speed_hunter=self.all_args.max_speed_hunter,
+            max_speed_blocker=self.all_args.max_speed_blocker,
+            max_speed_target=self.all_args.max_speed_target,
+            perception_hunter=self.all_args.perception_hunter,
+            perception_blocker=self.all_args.perception_blocker,
+            perception_target=self.all_args.perception_target,
         )
         obs = env.reset()
 
         role_groups = env.role_groups
         hunter_indices = role_groups.get("hunter", [])
+        blocker_indices = role_groups.get("blocker", [])
         target_index = role_groups.get("target", [None])[0]
-
         positions = {idx: [env.positions[idx].copy()] for idx in range(env.agent_num)}
         capture = False
 
-        rnn_states = np.zeros((env.agent_num, self.recurrent_N, self.hidden_size), dtype=np.float32)
-        masks = np.ones((env.agent_num, 1), dtype=np.float32)
+        eval_rnn_states = {
+            group_name: np.zeros((1, len(agent_ids), self.recurrent_N, self.hidden_size), dtype=np.float32)
+            for group_name, agent_ids in self.policy_groups.items()
+        }
+        eval_masks = {
+            group_name: np.ones((1, len(agent_ids), 1), dtype=np.float32)
+            for group_name, agent_ids in self.policy_groups.items()
+        }
 
-        frames = [
-            self._draw_frame(
-                positions,
-                env.world_size,
-                hunter_indices,
-                target_index,
-                capture,
-                episode_idx,
-                step=0,
-            )
-        ]
+        frames = [self._draw_frame(positions, env.world_size, env.perception_ranges, hunter_indices, blocker_indices, target_index, capture, episode_idx, step=0)]
 
         for step in range(1, self.episode_length + 1):
-            self.trainer.prep_rollout()
-            actions, rnn_states = self.trainer.policy.act(
-                obs, rnn_states, masks, deterministic=True
-            )
-            actions = _t2n(actions)
-            rnn_states = _t2n(rnn_states)
-
-            if env.action_space[0].__class__.__name__ == "MultiDiscrete":
-                actions_env = []
-                for i in range(env.action_space[0].shape):
-                    actions_env.append(np.eye(env.action_space[0].high[i] + 1)[actions[:, i]])
-                actions_env = np.concatenate(actions_env, axis=1)
-            elif env.action_space[0].__class__.__name__ == "Discrete":
-                actions_env = np.squeeze(np.eye(env.action_space[0].n)[actions], 1)
-            else:
-                actions_env = actions
+            actions_env = np.zeros((env.agent_num, env.action_dim), dtype=np.float32)
+            for group_name, agent_ids in self.policy_groups.items():
+                trainer = self.trainers[group_name]
+                trainer.prep_rollout()
+                action, next_rnn = trainer.policy.act(
+                    obs[agent_ids],
+                    eval_rnn_states[group_name][0],
+                    eval_masks[group_name][0],
+                    deterministic=True,
+                )
+                actions_env[agent_ids] = _t2n(action)
+                eval_rnn_states[group_name][0] = _t2n(next_rnn)
 
             obs, rewards, dones, infos = env.step(actions_env)
             capture = capture or any(info.get("capture", False) for info in infos)
-
             for idx in range(env.agent_num):
                 positions[idx].append(env.positions[idx].copy())
 
-            frames.append(
-                self._draw_frame(
-                    positions,
-                    env.world_size,
-                    hunter_indices,
-                    target_index,
-                    capture,
-                    episode_idx,
-                    step=step,
-                )
-            )
+            frames.append(self._draw_frame(positions, env.world_size, env.perception_ranges, hunter_indices, blocker_indices, target_index, capture, episode_idx, step=step))
 
-            if np.any(dones):
-                rnn_states[dones] = 0.0
-                masks[dones] = 0.0
+            for group_name, agent_ids in self.policy_groups.items():
+                group_dones = dones[agent_ids]
+                eval_rnn_states[group_name][0][group_dones] = 0.0
+                eval_masks[group_name][0] = np.ones((len(agent_ids), 1), dtype=np.float32)
+                eval_masks[group_name][0][group_dones] = 0.0
+
             if np.all(dones):
                 break
 
         env.close()
         return frames
 
-    def _draw_frame(
-        self,
-        positions,
-        world_size,
-        hunter_indices,
-        target_index,
-        capture,
-        episode_idx,
-        step,
-    ):
-        fig, ax = plt.subplots(figsize=(4, 4), dpi=120)
+    def _draw_fade_traj(self, ax, traj, color):
+        if len(traj) < 2:
+            return
+        points = traj.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        alpha = np.linspace(0.15, 0.9, len(segments))
+        rgba = np.tile(plt.matplotlib.colors.to_rgba(color), (len(segments), 1))
+        rgba[:, 3] = alpha
+        lc = LineCollection(segments, colors=rgba, linewidths=2.0)
+        ax.add_collection(lc)
+
+    def _draw_frame(self, positions, world_size, perception_ranges, hunter_indices, blocker_indices, target_index, capture, episode_idx, step):
+        fig, ax = plt.subplots(figsize=(6.8, 6.8), dpi=140)
         ax.set_xlim(-world_size, world_size)
         ax.set_ylim(-world_size, world_size)
         ax.set_aspect("equal")
         ax.set_title(f"Episode {episode_idx} - Step {step}")
-        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.grid(True, linestyle="--", alpha=0.25)
 
-        hunter_colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd"]
+        palette = {"hunter": "#1f77b4", "blocker": "#2ca02c", "target": "#d62728"}
+
         for i, idx in enumerate(hunter_indices):
             traj = np.array(positions[idx])
-            color = hunter_colors[i % len(hunter_colors)]
-            ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=1.5)
-            ax.scatter(traj[-1, 0], traj[-1, 1], color=color, marker="o", s=35)
+            self._draw_fade_traj(ax, traj, palette["hunter"])
+            ax.scatter(traj[-1, 0], traj[-1, 1], color=palette["hunter"], s=45)
+            pr = plt.Circle((traj[-1, 0], traj[-1, 1]), perception_ranges["hunter"], color=palette["hunter"], alpha=0.08)
+            ax.add_patch(pr)
             ax.text(traj[-1, 0], traj[-1, 1], f"H{i+1}", fontsize=8)
 
+        for i, idx in enumerate(blocker_indices):
+            traj = np.array(positions[idx])
+            self._draw_fade_traj(ax, traj, palette["blocker"])
+            ax.scatter(traj[-1, 0], traj[-1, 1], color=palette["blocker"], marker="s", s=42)
+            pr = plt.Circle((traj[-1, 0], traj[-1, 1]), perception_ranges["blocker"], color=palette["blocker"], alpha=0.07)
+            ax.add_patch(pr)
+            ax.text(traj[-1, 0], traj[-1, 1], f"B{i+1}", fontsize=8)
+
         if target_index is not None:
-            target_traj = np.array(positions[target_index])
-            ax.plot(target_traj[:, 0], target_traj[:, 1], color="#d62728", linewidth=2.0)
-            ax.scatter(target_traj[-1, 0], target_traj[-1, 1], color="#d62728", marker="*", s=80)
-            ax.text(target_traj[-1, 0], target_traj[-1, 1], "Target", fontsize=8)
+            traj = np.array(positions[target_index])
+            self._draw_fade_traj(ax, traj, palette["target"])
+            ax.scatter(traj[-1, 0], traj[-1, 1], color=palette["target"], marker="*", s=95)
+            pr = plt.Circle((traj[-1, 0], traj[-1, 1]), perception_ranges["target"], color=palette["target"], alpha=0.08)
+            ax.add_patch(pr)
+            ax.text(traj[-1, 0], traj[-1, 1], "Target", fontsize=8)
 
         status = "Captured" if capture else "Not captured"
-        ax.text(
-            0.02,
-            0.98,
-            f"Status: {status}",
-            transform=ax.transAxes,
-            fontsize=9,
-            verticalalignment="top",
-            bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"),
-        )
+        ax.text(0.02, 0.98, f"Status: {status}", transform=ax.transAxes, fontsize=10, verticalalignment="top", bbox=dict(facecolor="white", alpha=0.8, edgecolor="none"))
 
         canvas = FigureCanvas(fig)
         canvas.draw()
@@ -233,9 +194,8 @@ class UavPursuitRunner(EnvRunner):
             buf = canvas.tostring_rgb()
             image = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 3)
         except AttributeError:
-            # Matplotlib versions without tostring_rgb; use ARGB and convert.
             buf = canvas.tostring_argb()
             image = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 4)
-            image = image[:, :, [1, 2, 3]]  # ARGB -> RGB
+            image = image[:, :, [1, 2, 3]]
         plt.close(fig)
         return image

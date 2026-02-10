@@ -5,12 +5,9 @@ import yaml
 
 
 def _extract_positional_config(args):
-    breakpoint()
     for index, value in enumerate(args):
-        print(index, value)
         if not value.startswith("-") and value.endswith((".yml", ".yaml")):
             return args[:index] + args[index + 1 :], value
-    breakpoint()
     return args, None
 
 
@@ -120,7 +117,7 @@ def get_config():
             the max length of episode in the buffer.
 
     Network parameters:
-        --share_policy
+        --policy_share
             by default True, all agents will share the same network; set to make training agents use different policies.
         --use_centralized_V
             by default True, use centralized training mode; or else will decentralized training mode.
@@ -302,15 +299,18 @@ def get_config():
         help="Whether to use global state or concatenated obs",
     )
 
+    parser.add_argument("--target_policy_source", type=str, default="train", choices=["train", "patrol"])
+    parser.add_argument("--target_patrol_path", type=str, default=None)
+
     # replay buffer parameters
     parser.add_argument("--episode_length", type=int, default=200, help="Max length for any episode")
 
     # network parameters
     parser.add_argument(
-        "--share_policy",
-        action="store_false",
-        default=False,
-        help="Whether agent share the same policy",
+        "--policy_share",
+        type=lambda x: str(x).lower() in ["1", "true", "yes"],
+        default=True,
+        help="True表示同一角色共享policy；False表示每个agent独立policy",
     )
     parser.add_argument(
         "--use_centralized_V",
