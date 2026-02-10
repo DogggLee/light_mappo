@@ -36,6 +36,8 @@ def make_train_env(all_args):
                 capture_steps=all_args.capture_steps,
                 max_steps=all_args.episode_length,
                 seed=all_args.seed + rank * 1000,
+                target_policy_source=all_args.target_policy_source,
+                target_patrol_path=all_args.target_patrol_path,
             )
             return env
 
@@ -56,6 +58,8 @@ def make_eval_env(all_args):
                 capture_steps=all_args.capture_steps,
                 max_steps=all_args.episode_length,
                 seed=all_args.seed + rank * 1000,
+                target_policy_source=all_args.target_policy_source,
+                target_patrol_path=all_args.target_patrol_path,
             )
             return env
 
@@ -86,7 +90,6 @@ def parse_args(args, parser):
     )
     # all_args.env_name = "MPE"
     all_args.num_agents = all_args.num_hunters + all_args.num_blockers + 1
-    # all_args.share_policy = True
     return all_args, config_path
 
 

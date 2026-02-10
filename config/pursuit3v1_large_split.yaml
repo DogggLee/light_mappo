@@ -29,10 +29,12 @@ uav_pursuit:
   capture_steps: 30
   gif_interval: 10
   gif_frame_duration: 3.0
+  target_policy_source: train
+  target_patrol_path: config/target_patrol_route.json
 
 # Model/network settings
 model:
-  share_policy: false # whether all agents share the same policy
+  policy_share: false # whether all agents share the same policy
   use_centralized_V: true # centralized value function
   stacked_frames: 1
   use_stacked_frames: false
