@@ -1,7 +1,7 @@
 # Experiment settings
 exp:
   algorithm_name: mappo
-  experiment_name: Hunter3_Target1_patrol
+  experiment_name: Hunter1_Blocker3_Target1_Patrol_SpeedP0.05
   seed: 1
   cuda: true
   cuda_deterministic: true
@@ -21,24 +21,24 @@ env:
 # UAV pursuit scenario settings
 uav_pursuit:
   scenario_name: uav_pursuit_large
-  num_hunters: 5
-  num_blockers: 0
+  num_hunters: 1
+  num_blockers: 3
   world_size: 5.0
   dt: 0.2
-  capture_radius: 0.5
+  capture_radius: 0.1
   capture_steps: 30
   gif_interval: 10
   gif_frame_duration: 3.0
   target_policy_source: patrol
   target_patrol_path: config/target_patrol_routes.json
   target_patrol_names: ['square', 'ring', 'vert_trig', 'hori_trig']
-  target_patrol_switch_interval: 50
+  target_patrol_switch_interval: 0
   eval_random_patrol_routes: 0
   eval_random_patrol_points: 4
-  max_speed_hunter: 0.5
-  max_speed_blocker: 0.5
-  max_speed_target: 0.5
-  perception_hunter: 0.8
+  max_speed_hunter: 0.12
+  max_speed_blocker: 0.1
+  max_speed_target: 0.08
+  perception_hunter: 0.3
   perception_blocker: 1.2
   perception_target: 0.8
   speed_penalty: 0.05
@@ -100,7 +100,7 @@ logging:
 
 # Evaluation settings
 eval:
-  use_eval: false
+  use_eval: true
   eval_interval: 25
   eval_episodes: 32
 
