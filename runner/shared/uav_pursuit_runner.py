@@ -333,6 +333,84 @@ class UavPursuitRunner(EnvRunner):
         env.close()
         return frames
 
+    def _build_target_eval_policy(self, model_path):
+        # 懒加载外部 Target policy（仅评估使用），避免重复加载模型文件。
+        if not model_path:
+            return None
+        model_path = str(Path(model_path).resolve())
+        if model_path in self._target_eval_policy_cache:
+            return self._target_eval_policy_cache[model_path]
+
+        from algorithms.algorithm.rMAPPOPolicy import RMAPPOPolicy as Policy
+
+        target_idx = self.num_agents - 1
+        share_observation_space = self.eval_envs.share_observation_space[target_idx] if self.use_centralized_V else self.eval_envs.observation_space[target_idx]
+        target_policy = Policy(
+            self.all_args,
+            self.eval_envs.observation_space[target_idx],
+            share_observation_space,
+            self.eval_envs.action_space[target_idx],
+            device=self.device,
+        )
+        actor_state_dict = torch.load(model_path, map_location=self.device)
+        target_policy.actor.load_state_dict(actor_state_dict)
+        target_policy.actor.eval()
+        self._target_eval_policy_cache[model_path] = target_policy
+        return target_policy
+
+    def _resolve_target_model_path(self, scenario):
+        # 支持绝对路径、相对场景文件路径、以及目录（自动查找 actor_target.pt）。
+        raw_path = scenario.get("target_policy_model_path")
+        if not raw_path:
+            return None
+        path = Path(raw_path)
+        if not path.is_absolute() and scenario.get("scenario_file"):
+            path = Path(scenario["scenario_file"]).resolve().parent / path
+        path = path.resolve()
+        if path.is_dir():
+            candidate = path / "actor_target.pt"
+            if candidate.exists():
+                return str(candidate)
+        if path.exists():
+            return str(path)
+        raise FileNotFoundError(f"Target policy model not found: {path}")
+
+    def _resolve_patrol_route_path(self, scenario):
+        # 巡逻路径按序号组织在 datasets/<split>/patrol_routes/<idx>.yaml。
+        route_id = scenario.get("target_patrol_route_id")
+        if route_id in (None, "", "null"):
+            return None
+        route_stem = str(route_id).strip()
+        # 兼容 route_id 被 YAML 解析为整数的情况（如 001 -> 1）。
+        route_stem_candidates = [route_stem]
+        if route_stem.isdigit():
+            route_stem_candidates.append(route_stem.zfill(3))
+        if scenario.get("scenario_file"):
+            base_dir = Path(scenario["scenario_file"]).resolve().parent / "patrol_routes"
+        else:
+            base_dir = Path("datasets")
+        for stem in route_stem_candidates:
+            for ext in (".yaml", ".yml", ".json"):
+                candidate = base_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    return candidate
+        raise FileNotFoundError(f"Patrol route file not found for route_id={route_stem} in {base_dir}")
+
+    def _load_patrol_waypoints(self, route_path):
+        # 支持 yaml/json 两种巡逻路径文件，并统一提取 waypoints 列表。
+        if route_path is None:
+            return None
+        text = route_path.read_text(encoding="utf-8")
+        if route_path.suffix.lower() == ".json":
+            payload = json.loads(text)
+        else:
+            payload = yaml.safe_load(text) or {}
+        if isinstance(payload, dict):
+            waypoints = payload.get("waypoints", payload)
+        else:
+            waypoints = payload
+        return waypoints
+
     @torch.no_grad()
     def eval(self, total_num_steps, split="val", save_gif=True, model_tag="latest"):
         # 评估按场景逐个执行；target_policy=train 时默认同时评估 patrol 与 train。

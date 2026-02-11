@@ -183,6 +183,7 @@ class Runner(object):
     def record_eval_metrics(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps, scenario_id="default"):
         self.metrics.setdefault("eval", []).append({
             "total_num_steps": int(total_num_steps),
+            "scenario_id": str(scenario_id),
             "eval_average_episode_rewards": float(eval_average_episode_rewards),
             "capture_success_rate": float(capture_success_rate),
             "avg_capture_steps": float(avg_capture_steps) if avg_capture_steps is not None else None,
