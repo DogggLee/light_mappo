@@ -1,9 +1,9 @@
-import json
 from pathlib import Path
 
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+import yaml
 
 
 class MultiUavPursuitEnv:
@@ -117,9 +117,9 @@ class MultiUavPursuitEnv:
         if self.target_policy_source != "patrol":
             return {}, None, None
         if target_patrol_path is None:
-            raise ValueError("target_policy_source=patrol 时必须提供 target_patrol_path")
+            return {}, None, None
         route_file = Path(target_patrol_path)
-        data = json.loads(route_file.read_text(encoding="utf-8"))
+        data = yaml.safe_load(route_file.read_text(encoding="utf-8")) or {}
         routes = {}
 
         if isinstance(data, dict) and "routes" in data:
