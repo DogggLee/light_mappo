@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+import yaml
+
 import matplotlib.pyplot as plt
 import numpy as np
 import setproctitle
@@ -174,8 +176,67 @@ def _resolve_config_path(config_path):
     return (repo_root / path).resolve()
 
 
+
+def _load_yaml_mapping(yaml_path):
+    with yaml_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Scenario file must be a mapping: {yaml_path}")
+    return data
+
+
+def _load_scenario_suite(suite_path):
+    # 支持目录模式（每个yaml一个场景）和旧版单文件模式。
+    if not suite_path:
+        return []
+    resolved = _resolve_config_path(suite_path)
+    required_fields = {
+        "num_hunters", "num_blockers", "world_size", "dt", "capture_radius",
+        "capture_steps", "episode_length", "seed", "initial_positions", "target_patrol_route_id",
+    }
+    scenarios = []
+    if resolved.is_dir():
+        files = sorted([p for p in resolved.iterdir() if p.suffix.lower() in {".yaml", ".yml"}], key=lambda x: x.stem)
+        for fp in files:
+            if fp.parent.name == "patrol_routes":
+                continue
+            cfg = _load_yaml_mapping(fp)
+            cfg.setdefault("scenario_id", fp.stem)
+            cfg.setdefault("scenario_file", str(fp))
+            scenarios.append(cfg)
+    else:
+        data = _load_yaml_mapping(resolved)
+        scenarios = data.get("scenarios", []) if isinstance(data, dict) else data
+
+    normalized = []
+    for idx, sc in enumerate(scenarios):
+        sc = dict(sc)
+        if "target_patrol_route_id" not in sc and "target_patrol_name" in sc:
+            sc["target_patrol_route_id"] = sc.get("target_patrol_name")
+        missing = sorted(required_fields - set(sc.keys()))
+        if missing:
+            raise ValueError(f"scenario entry missing fields: {', '.join(missing)}")
+        sc.setdefault("scenario_id", f"scenario_{idx}")
+        normalized.append(sc)
+    return normalized
+
+
+def _resolve_eval_suite_path(all_args):
+    # 若显式传入 scenario_suite 则优先，否则根据 split 从 config 读取 val/test。
+    if getattr(all_args, "scenario_suite", None):
+        return all_args.scenario_suite
+    split = str(getattr(all_args, "eval_dataset_split", "val")).lower()
+    if split == "test":
+        return getattr(all_args, "scenario_suite_test", None)
+    return getattr(all_args, "scenario_suite_val", None)
+
 def parse_args(args, parser):
     parser.add_argument("--scenario_name", type=str, default="uav_pursuit")
+    parser.add_argument("--scenario_suite", type=str, default=None)
+    parser.add_argument("--scenario_suite_val", type=str, default="datasets/val")
+    parser.add_argument("--scenario_suite_test", type=str, default="datasets/test")
+    parser.add_argument("--eval_dataset_split", type=str, default="val", choices=["val", "test"])
+    parser.add_argument("--train_patrol_route_dir", type=str, default="datasets/val/patrol_routes")
     parser.add_argument("--num_hunters", type=int, default=3)
     parser.add_argument("--num_blockers", type=int, default=0)
     parser.add_argument("--world_size", type=float, default=1.0)
@@ -213,6 +274,8 @@ def parse_args(args, parser):
         require_config=True,
     )
     all_args.num_agents = all_args.num_hunters + all_args.num_blockers + 1
+    all_args.scenario_suite_data = _load_scenario_suite(_resolve_eval_suite_path(all_args))
+    all_args.test_suite_data = _load_scenario_suite(getattr(all_args, "scenario_suite_test", None))
     return all_args, str(resolved_config)
 
 

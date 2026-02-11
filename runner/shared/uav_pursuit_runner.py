@@ -1,6 +1,9 @@
+import json
+import shutil
 import time
 from pathlib import Path
 
+import yaml
 import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,6 +26,9 @@ class UavPursuitRunner(EnvRunner):
         self.gif_frame_duration = getattr(self.all_args, "gif_frame_duration", 0.1)
         self.gif_dir = Path(self.run_dir) / "gifs"
         self.gif_dir.mkdir(parents=True, exist_ok=True)
+        # val/test 场景评估 GIF 输出目录。
+        self.eval_gif_dir = Path(self.run_dir) / "eval_gifs"
+        self.eval_gif_dir.mkdir(parents=True, exist_ok=True)
         self.target_patrol_names = self._normalize_name_list(getattr(self.all_args, "target_patrol_names", None))
         self.target_patrol_switch_interval = int(getattr(self.all_args, "target_patrol_switch_interval", 0))
         self.eval_random_patrol_routes = int(getattr(self.all_args, "eval_random_patrol_routes", 0))
@@ -33,6 +39,10 @@ class UavPursuitRunner(EnvRunner):
         self._best_eval_avg_reward = None
         self._best_capture_success_rate = None
         self._best_avg_capture_steps = None
+        self.scenario_suite = getattr(self.all_args, "scenario_suite_data", [])
+        self.test_suite = getattr(self.all_args, "test_suite_data", [])
+        self.best_model_dir = Path(self.run_dir) / "best_models"
+        self.best_model_dir.mkdir(parents=True, exist_ok=True)
 
     def _maybe_report_best_metrics(
         self,
@@ -106,14 +116,82 @@ class UavPursuitRunner(EnvRunner):
             routes.append(route)
         return routes
 
+
+    def _load_patrol_waypoints_from_file(self, route_file):
+        # 统一读取 yaml/json 巡逻路径文件。
+        if route_file is None:
+            return None
+        route_path = Path(route_file)
+        text = route_path.read_text(encoding="utf-8")
+        if route_path.suffix.lower() == ".json":
+            payload = json.loads(text)
+        else:
+            payload = yaml.safe_load(text) or {}
+        if isinstance(payload, dict):
+            return payload.get("waypoints", payload)
+        return payload
+
+    def _resolve_route_file(self, scenario):
+        # 路径文件位于场景同级 patrol_routes 目录，按 route_id 定位。
+        route_id = scenario.get("target_patrol_route_id")
+        if route_id in (None, "", "null"):
+            return None
+        if not scenario.get("scenario_file"):
+            return None
+        base_dir = Path(scenario["scenario_file"]).resolve().parent / "patrol_routes"
+        route_stem = str(route_id)
+        candidates = [route_stem]
+        if route_stem.isdigit():
+            candidates.append(route_stem.zfill(3))
+        for stem in candidates:
+            for ext in (".yaml", ".yml", ".json"):
+                fp = base_dir / f"{stem}{ext}"
+                if fp.exists():
+                    return fp
+        return None
+
+    def _sample_train_patrol_route(self):
+        # 训练阶段也采用与 val/test 一致的 patrol_routes 文件管理。
+        route_dir = Path(getattr(self.all_args, "train_patrol_route_dir", ""))
+        if not route_dir.exists():
+            return None
+        files = sorted([p for p in route_dir.iterdir() if p.suffix.lower() in {".yaml", ".yml", ".json"}], key=lambda x: x.stem)
+        if not files:
+            return None
+        return files[self._patrol_rng.randint(0, len(files))]
+
+    def _save_models_to_dir(self, target_dir):
+        # 保存当前策略快照，用于后续 test 阶段评估。
+        target_dir = Path(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        self.save()
+        for model_file in Path(self.save_dir).glob("*.pt"):
+            shutil.copy2(model_file, target_dir / model_file.name)
+
+    def _load_models_from_dir(self, model_dir):
+        # 加载指定快照策略进行 test 评估。
+        self.model_dir = str(model_dir)
+        self.restore()
+
     def run(self):
+        # 训练阶段默认以 val 集进行评估，并维护三类最优模型。
         self._maybe_switch_patrol_route(0, force=True)
         self.warmup()
         start = time.time()
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
 
         for episode in range(episodes):
-            self._maybe_switch_patrol_route(episode)
+            # 训练 patrol 轨迹使用 datasets/*/patrol_routes 的文件管理方式。
+            if self.target_policy_source == "patrol":
+                route_file = self._sample_train_patrol_route()
+                if route_file is not None:
+                    route = self._load_patrol_waypoints_from_file(route_file)
+                    self.envs.set_target_patrol_waypoints(route, route_name=route_file.stem)
+                    if self.eval_envs is not None:
+                        self.eval_envs.set_target_patrol_waypoints(route, route_name=route_file.stem)
+            else:
+                self._maybe_switch_patrol_route(episode)
+
             if self.use_linear_lr_decay:
                 for group_name in self.group_order:
                     self.trainers[group_name].policy.lr_decay(episode, episodes)
@@ -140,16 +218,28 @@ class UavPursuitRunner(EnvRunner):
                 train_infos["system"] = {"average_episode_rewards": float(np.mean(avg_rewards))}
                 self.log_train(train_infos, total_num_steps)
                 self.record_train_metrics(total_num_steps, train_infos["system"]["average_episode_rewards"])
-                self._maybe_report_best_metrics(
-                    total_num_steps,
-                    train_avg_reward=train_infos["system"]["average_episode_rewards"],
-                )
+                self._maybe_report_best_metrics(total_num_steps, train_avg_reward=train_infos["system"]["average_episode_rewards"])
 
             if (episode + 1) % self.gif_interval == 0:
                 self._save_training_gif(episode + 1)
 
             if episode % self.eval_interval == 0 and self.use_eval:
-                self.eval(total_num_steps)
+                val_summary = self.eval(total_num_steps, split="val", save_gif=False)
+                if val_summary is not None:
+                    if val_summary["reward"] >= (self._best_eval_avg_reward if self._best_eval_avg_reward is not None else -np.inf):
+                        self._save_models_to_dir(self.best_model_dir / "best_reward")
+                    if val_summary["success"] >= (self._best_capture_success_rate if self._best_capture_success_rate is not None else -np.inf):
+                        self._save_models_to_dir(self.best_model_dir / "best_success")
+                    if val_summary["steps"] is not None and (self._best_avg_capture_steps is None or val_summary["steps"] <= self._best_avg_capture_steps):
+                        self._save_models_to_dir(self.best_model_dir / "best_steps")
+
+        # 训练完成后，使用 test 集评估三类最优模型并保存每个场景 GIF。
+        if self.use_eval:
+            for tag in ["best_reward", "best_success", "best_steps"]:
+                model_dir = self.best_model_dir / tag
+                if model_dir.exists():
+                    self._load_models_from_dir(model_dir)
+                    self.eval(episodes * self.episode_length * self.n_rollout_threads, split="test", save_gif=True, model_tag=tag)
 
     @torch.no_grad()
     def _save_training_gif(self, episode_idx):
@@ -158,7 +248,7 @@ class UavPursuitRunner(EnvRunner):
         imageio.mimsave(str(gif_path), frames, duration=self.gif_frame_duration)
 
     @torch.no_grad()
-    def _collect_episode_frames(self, episode_idx, patrol_name=None):
+    def _collect_episode_frames(self, episode_idx, patrol_name=None, scenario=None, mode=None):
         env = MultiUavPursuitEnv(
             num_hunters=self.all_args.num_hunters,
             num_blockers=self.all_args.num_blockers,
@@ -178,8 +268,18 @@ class UavPursuitRunner(EnvRunner):
             perception_blocker=self.all_args.perception_blocker,
             perception_target=self.all_args.perception_target,
         )
+        if scenario is not None:
+            # 评估 GIF 按场景参数重建环境状态。
+            env.apply_scenario_config(scenario)
+        if mode is not None:
+            env.target_policy_source = mode
         if patrol_name:
             env.set_target_patrol_route(patrol_name)
+        if scenario is not None and mode == "patrol":
+            route_file = self._resolve_route_file(scenario)
+            route = self._load_patrol_waypoints_from_file(route_file) if route_file else None
+            if route is not None:
+                env.set_target_patrol_waypoints(route, route_name=f"route_{scenario.get('target_patrol_route_id')}")
         obs = env.reset()
 
         role_groups = env.role_groups
@@ -234,110 +334,146 @@ class UavPursuitRunner(EnvRunner):
         return frames
 
     @torch.no_grad()
-    def eval(self, total_num_steps):
-        eval_episodes = int(self.all_args.eval_episodes)
-        eval_episode_rewards = []
-        capture_flags = []
-        capture_steps = []
-        random_routes = None
+    def eval(self, total_num_steps, split="val", save_gif=True, model_tag="latest"):
+        # 评估按场景逐个执行；target_policy=train 时默认同时评估 patrol 与 train。
+        suite = self.scenario_suite if split == "val" else self.test_suite
+        if not suite:
+            suite = [{
+                "scenario_id": f"{split}_default",
+                "num_hunters": self.all_args.num_hunters,
+                "num_blockers": self.all_args.num_blockers,
+                "world_size": self.all_args.world_size,
+                "dt": self.all_args.dt,
+                "capture_radius": self.all_args.capture_radius,
+                "capture_steps": self.all_args.capture_steps,
+                "episode_length": self.episode_length,
+                "seed": self.all_args.seed,
+                "initial_positions": None,
+                "target_patrol_route_id": None,
+            }]
 
-        if self.target_policy_source == "patrol" and self.eval_random_patrol_routes > 0:
-            random_routes = self._generate_random_patrol_routes(self.eval_random_patrol_routes, self.eval_random_patrol_points)
+        summary_rewards, summary_success, summary_steps = [], [], []
 
-        for ep in range(eval_episodes):
-            if self.target_policy_source == "patrol":
-                if random_routes:
-                    route = random_routes[self._patrol_rng.randint(0, len(random_routes))]
-                    self.eval_envs.set_target_patrol_waypoints(route, route_name=f"eval_random_{ep}")
-                elif self.target_patrol_names:
-                    name = self._sample_patrol_name()
-                    if name is not None:
-                        self.eval_envs.set_target_patrol_route(name)
+        for scenario_idx, scenario in enumerate(suite):
+            scenario_id = str(scenario.get("scenario_id", f"{split}_{scenario_idx}"))
+            scenario_cfg = dict(scenario)
+            self.eval_envs.apply_scenario_config(scenario_cfg)
 
-            eval_obs = self.eval_envs.reset()
-            eval_rnn_states = {
-                group_name: np.zeros((self.n_eval_rollout_threads, len(agent_ids), self.recurrent_N, self.hidden_size), dtype=np.float32)
-                for group_name, agent_ids in self.policy_groups.items()
-            }
-            eval_masks = {
-                group_name: np.ones((self.n_eval_rollout_threads, len(agent_ids), 1), dtype=np.float32)
-                for group_name, agent_ids in self.policy_groups.items()
-            }
+            # train target 时同时测 patrol/train，否则仅测 patrol。
+            if self.target_policy_source == "train":
+                eval_modes = scenario.get("eval_target_modes", ["patrol", "train"])
+            else:
+                eval_modes = ["patrol"]
 
-            episode_done = np.zeros(self.n_eval_rollout_threads, dtype=bool)
-            episode_steps = np.zeros(self.n_eval_rollout_threads, dtype=np.int32)
-            episode_capture = np.zeros(self.n_eval_rollout_threads, dtype=bool)
-            episode_capture_step = np.full(self.n_eval_rollout_threads, -1, dtype=np.int32)
-            ep_rewards = np.zeros((self.n_eval_rollout_threads, self.num_agents), dtype=np.float32)
+            for mode in eval_modes:
+                eval_episodes = int(self.all_args.eval_episodes)
+                scenario_cfg = dict(scenario)
+                scenario_cfg["target_policy_source"] = mode
+                self.eval_envs.apply_scenario_config(scenario_cfg)
+                eval_episode_rewards, capture_flags, capture_steps = [], [], []
 
-            for _ in range(self.episode_length):
-                eval_actions_env = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.eval_envs.action_space[0].shape[0]), dtype=np.float32)
-                for group_name, agent_ids in self.policy_groups.items():
-                    trainer = self.trainers[group_name]
-                    trainer.prep_rollout()
-                    eval_action, group_rnn = trainer.policy.act(
-                        np.concatenate(eval_obs[:, agent_ids]),
-                        np.concatenate(eval_rnn_states[group_name]),
-                        np.concatenate(eval_masks[group_name]),
-                        deterministic=True,
-                    )
-                    eval_actions = np.array(np.split(_t2n(eval_action), self.n_eval_rollout_threads))
-                    eval_rnn_states[group_name] = np.array(np.split(_t2n(group_rnn), self.n_eval_rollout_threads))
-                    eval_actions_env[:, agent_ids, :] = eval_actions
+                route_file = self._resolve_route_file(scenario)
+                route = self._load_patrol_waypoints_from_file(route_file) if route_file else None
+                if mode == "patrol" and route is not None:
+                    self.eval_envs.set_target_patrol_waypoints(route, route_name=f"route_{scenario.get('target_patrol_route_id')}")
 
-                eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)
-                ep_rewards += eval_rewards
+                for _ in range(eval_episodes):
+                    eval_obs = self.eval_envs.reset()
+                    eval_rnn_states = {
+                        group_name: np.zeros((self.n_eval_rollout_threads, len(agent_ids), self.recurrent_N, self.hidden_size), dtype=np.float32)
+                        for group_name, agent_ids in self.policy_groups.items()
+                    }
+                    eval_masks = {
+                        group_name: np.ones((self.n_eval_rollout_threads, len(agent_ids), 1), dtype=np.float32)
+                        for group_name, agent_ids in self.policy_groups.items()
+                    }
 
-                for env_i in range(self.n_eval_rollout_threads):
-                    if not episode_done[env_i]:
-                        episode_steps[env_i] += 1
-                        capture = any(info.get("capture", False) for info in eval_infos[env_i])
-                        if capture and not episode_capture[env_i]:
-                            episode_capture[env_i] = True
-                            episode_capture_step[env_i] = episode_steps[env_i]
-                        if np.all(eval_dones[env_i]):
-                            episode_done[env_i] = True
+                    episode_done = np.zeros(self.n_eval_rollout_threads, dtype=bool)
+                    episode_steps = np.zeros(self.n_eval_rollout_threads, dtype=np.int32)
+                    episode_capture = np.zeros(self.n_eval_rollout_threads, dtype=bool)
+                    episode_capture_step = np.full(self.n_eval_rollout_threads, -1, dtype=np.int32)
+                    ep_rewards = np.zeros((self.n_eval_rollout_threads, self.num_agents), dtype=np.float32)
 
-                for group_name, agent_ids in self.policy_groups.items():
-                    group_dones = eval_dones[:, agent_ids]
-                    eval_rnn_states[group_name][group_dones] = 0.0
-                    eval_masks[group_name] = np.ones((self.n_eval_rollout_threads, len(agent_ids), 1), dtype=np.float32)
-                    eval_masks[group_name][group_dones] = 0.0
+                    for _ in range(int(scenario.get("episode_length", self.episode_length))):
+                        eval_actions_env = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.eval_envs.action_space[0].shape[0]), dtype=np.float32)
+                        for group_name, agent_ids in self.policy_groups.items():
+                            trainer = self.trainers[group_name]
+                            trainer.prep_rollout()
+                            eval_action, group_rnn = trainer.policy.act(
+                                np.concatenate(eval_obs[:, agent_ids]),
+                                np.concatenate(eval_rnn_states[group_name]),
+                                np.concatenate(eval_masks[group_name]),
+                                deterministic=True,
+                            )
+                            eval_actions = np.array(np.split(_t2n(eval_action), self.n_eval_rollout_threads))
+                            eval_rnn_states[group_name] = np.array(np.split(_t2n(group_rnn), self.n_eval_rollout_threads))
+                            eval_actions_env[:, agent_ids, :] = eval_actions
 
-                if np.all(episode_done):
-                    break
+                        # patrol 模式下强制 target 动作为巡逻轨迹；train 模式保持网络控制。
+                        if mode == "patrol":
+                            pass
 
-            eval_episode_rewards.append(ep_rewards)
-            capture_flags.extend(episode_capture.tolist())
-            capture_steps.extend([int(cs) for cs in episode_capture_step if cs > 0])
+                        eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)
+                        ep_rewards += eval_rewards
 
-        eval_avg_rewards = float(np.mean([np.mean(ep) for ep in eval_episode_rewards])) if eval_episode_rewards else 0.0
-        total_episodes = max(1, eval_episodes * self.n_eval_rollout_threads)
-        capture_success_rate = float(np.sum(capture_flags) / total_episodes) if capture_flags else 0.0
-        avg_capture_steps = float(np.mean(capture_steps)) if capture_steps else None
+                        for env_i in range(self.n_eval_rollout_threads):
+                            if not episode_done[env_i]:
+                                episode_steps[env_i] += 1
+                                capture = any(info.get("capture", False) for info in eval_infos[env_i])
+                                if capture and not episode_capture[env_i]:
+                                    episode_capture[env_i] = True
+                                    episode_capture_step[env_i] = episode_steps[env_i]
+                                if np.all(eval_dones[env_i]):
+                                    episode_done[env_i] = True
 
-        eval_env_infos = {
-            "eval_average_episode_rewards": eval_avg_rewards,
-            "eval_capture_success_rate": capture_success_rate,
+                        for group_name, agent_ids in self.policy_groups.items():
+                            group_dones = eval_dones[:, agent_ids]
+                            eval_rnn_states[group_name][group_dones] = 0.0
+                            eval_masks[group_name] = np.ones((self.n_eval_rollout_threads, len(agent_ids), 1), dtype=np.float32)
+                            eval_masks[group_name][group_dones] = 0.0
+
+                        if np.all(episode_done):
+                            break
+
+                    eval_episode_rewards.append(ep_rewards)
+                    capture_flags.extend(episode_capture.tolist())
+                    capture_steps.extend([int(cs) for cs in episode_capture_step if cs > 0])
+
+                eval_avg_rewards = float(np.mean([np.mean(ep) for ep in eval_episode_rewards])) if eval_episode_rewards else 0.0
+                total_episodes = max(1, eval_episodes * self.n_eval_rollout_threads)
+                capture_success_rate = float(np.sum(capture_flags) / total_episodes) if capture_flags else 0.0
+                avg_capture_steps = float(np.mean(capture_steps)) if capture_steps else None
+
+                scenario_metric_id = f"{split}/{scenario_id}/{mode}/{model_tag}"
+                eval_env_infos = {
+                    f"eval/{scenario_metric_id}/average_episode_rewards": eval_avg_rewards,
+                    f"eval/{scenario_metric_id}/capture_success_rate": capture_success_rate,
+                }
+                if avg_capture_steps is not None:
+                    eval_env_infos[f"eval/{scenario_metric_id}/avg_capture_steps"] = avg_capture_steps
+                self.log_env(eval_env_infos, total_num_steps)
+                self.record_eval_metrics(total_num_steps, eval_avg_rewards, capture_success_rate, avg_capture_steps, scenario_id=scenario_metric_id)
+                self._maybe_report_best_metrics(total_num_steps, eval_avg_reward=eval_avg_rewards, capture_success_rate=capture_success_rate, avg_capture_steps=avg_capture_steps)
+
+                summary_rewards.append(eval_avg_rewards)
+                summary_success.append(capture_success_rate)
+                if avg_capture_steps is not None:
+                    summary_steps.append(avg_capture_steps)
+
+                if save_gif:
+                    frames = self._collect_episode_frames(scenario_idx, scenario=scenario, mode=mode)
+                    gif_dir = self.eval_gif_dir / f"{split}_{scenario_idx}"
+                    gif_dir.mkdir(parents=True, exist_ok=True)
+                    gif_path = gif_dir / f"{scenario_id}_{mode}_{model_tag}.gif"
+                    imageio.mimsave(str(gif_path), frames, duration=self.gif_frame_duration)
+
+        if not summary_rewards:
+            return None
+        return {
+            "reward": float(np.mean(summary_rewards)),
+            "success": float(np.mean(summary_success)),
+            "steps": float(np.mean(summary_steps)) if summary_steps else None,
         }
-        if avg_capture_steps is not None:
-            eval_env_infos["eval_avg_capture_steps"] = avg_capture_steps
-
-        if eval_episode_rewards:
-            all_ep_rewards = np.concatenate(eval_episode_rewards, axis=0)
-            for group_name, agent_ids in self.policy_groups.items():
-                if not agent_ids:
-                    continue
-                role_avg = float(np.mean(all_ep_rewards[:, agent_ids]))
-                eval_env_infos[f"eval_average_episode_rewards/{group_name}"] = role_avg
-        self.log_env(eval_env_infos, total_num_steps)
-        self.record_eval_metrics(total_num_steps, eval_avg_rewards, capture_success_rate, avg_capture_steps)
-        self._maybe_report_best_metrics(
-            total_num_steps,
-            eval_avg_reward=eval_avg_rewards,
-            capture_success_rate=capture_success_rate,
-            avg_capture_steps=avg_capture_steps,
-        )
 
     def _draw_fade_traj(self, ax, traj, color):
         if len(traj) < 2:
