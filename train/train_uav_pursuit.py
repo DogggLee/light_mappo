@@ -4,10 +4,10 @@
 # @File    : train_uav_pursuit.py
 """
 
-import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -22,7 +22,6 @@ parent_dir = os.path.abspath(os.path.join(os.getcwd(), "."))
 # Append the parent directory to sys.path, otherwise the following import will fail
 sys.path.append(parent_dir)
 
-from parameters import get_config, parse_args_with_yaml
 from envs.env_wrappers import DummyVecEnv
 from envs.uav_pursuit_env import MultiUavPursuitEnv
 from runner.shared.uav_pursuit_runner import UavPursuitRunner
@@ -31,20 +30,33 @@ from runner.shared.uav_pursuit_runner import UavPursuitRunner
 ROLE_NAMES = ("hunter", "blocker", "target")
 
 
+class ConfigDict(dict):
+    """Dict config with attribute-style access."""
+
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError as exc:
+            raise AttributeError(item) from exc
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+
 def _get_role_params(all_args):
     return {
-        "max_speed_hunter": all_args.max_speed_hunter,
-        "max_speed_blocker": all_args.max_speed_blocker,
-        "max_speed_target": all_args.max_speed_target,
-        "perception_hunter": all_args.perception_hunter,
-        "perception_blocker": all_args.perception_blocker,
-        "perception_target": all_args.perception_target,
-        "speed_penalty": all_args.speed_penalty,
+        "max_speed_hunter": all_args["max_speed_hunter"],
+        "max_speed_blocker": all_args["max_speed_blocker"],
+        "max_speed_target": all_args["max_speed_target"],
+        "perception_hunter": all_args["perception_hunter"],
+        "perception_blocker": all_args["perception_blocker"],
+        "perception_target": all_args["perception_target"],
+        "speed_penalty": all_args["speed_penalty"],
     }
 
 
 def _render_perception_preview(all_args):
-    world_size = all_args.world_size
+    world_size = all_args["world_size"]
     fig, ax = plt.subplots(figsize=(7, 7), dpi=130)
     ax.set_xlim(-world_size, world_size)
     ax.set_ylim(-world_size, world_size)
@@ -61,9 +73,9 @@ def _render_perception_preview(all_args):
     markers = {"hunter": "o", "blocker": "s", "target": "*"}
 
     for role in ROLE_NAMES:
-        perception = getattr(all_args, f"perception_{role}")
+        perception = all_args[f"perception_{role}"]
         x, y = positions[role]
-        ax.scatter([x], [y], c=colors[role], s=90, marker=markers[role], label=f"{role} (speed={getattr(all_args, f'max_speed_{role}'):.2f})")
+        ax.scatter([x], [y], c=colors[role], s=90, marker=markers[role], label=f"{role} (speed={all_args[f'max_speed_{role}']:.2f})")
         ax.add_patch(plt.Circle((x, y), perception, color=colors[role], alpha=0.12))
         ax.text(x, y, f" {role}\nR={perception:.2f}", fontsize=9, va="bottom")
 
@@ -78,9 +90,9 @@ def _interactive_confirm_perception(all_args):
         try:
             answer = input(
                 "\n当前感知范围: "
-                f"hunter={all_args.perception_hunter}, "
-                f"blocker={all_args.perception_blocker}, "
-                f"target={all_args.perception_target}. "
+                f"hunter={all_args['perception_hunter']}, "
+                f"blocker={all_args['perception_blocker']}, "
+                f"target={all_args['perception_target']}. "
                 "输入 y 确认开始训练；输入 n 重新修改: "
             ).strip().lower()
         except EOFError:
@@ -100,7 +112,7 @@ def _interactive_confirm_perception(all_args):
         for role in ROLE_NAMES:
             key = f"perception_{role}"
             while True:
-                raw = input(f"请输入 {role} 的感知范围(当前 {getattr(all_args, key)}): ").strip()
+                raw = input(f"请输入 {role} 的感知范围(当前 {all_args[key]}): ").strip()
                 try:
                     val = float(raw)
                 except ValueError:
@@ -109,7 +121,7 @@ def _interactive_confirm_perception(all_args):
                 if val <= 0.0:
                     print("感知范围必须大于 0。")
                     continue
-                setattr(all_args, key, val)
+                all_args[key] = val
                 break
         plt.close("all")
 
@@ -120,24 +132,24 @@ def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
             env = MultiUavPursuitEnv(
-                num_hunters=all_args.num_hunters,
-                num_blockers=all_args.num_blockers,
-                world_size=all_args.world_size,
-                dt=all_args.dt,
-                capture_radius=all_args.capture_radius,
-                capture_steps=all_args.capture_steps,
-                max_steps=all_args.episode_length,
-                seed=all_args.seed + rank * 1000,
-                target_policy_source=all_args.target_policy_source,
-                target_patrol_path=all_args.target_patrol_path,
-                target_patrol_names=all_args.target_patrol_names,
+                num_hunters=all_args["num_hunters"],
+                num_blockers=all_args["num_blockers"],
+                world_size=all_args["world_size"],
+                dt=all_args["dt"],
+                capture_radius=all_args["capture_radius"],
+                capture_steps=all_args["capture_steps"],
+                max_steps=all_args["episode_length"],
+                seed=all_args["seed"] + rank * 1000,
+                target_policy_source=all_args["target_policy_source"],
+                target_patrol_path=all_args.get("target_patrol_path"),
+                target_patrol_names=all_args.get("target_patrol_names"),
                 **role_params,
             )
             return env
 
         return init_env
 
-    return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+    return DummyVecEnv([get_env_fn(i) for i in range(all_args["n_rollout_threads"])])
 
 
 def make_eval_env(all_args):
@@ -146,24 +158,24 @@ def make_eval_env(all_args):
     def get_env_fn(rank):
         def init_env():
             env = MultiUavPursuitEnv(
-                num_hunters=all_args.num_hunters,
-                num_blockers=all_args.num_blockers,
-                world_size=all_args.world_size,
-                dt=all_args.dt,
-                capture_radius=all_args.capture_radius,
-                capture_steps=all_args.capture_steps,
-                max_steps=all_args.episode_length,
-                seed=all_args.seed + rank * 1000,
-                target_policy_source=all_args.target_policy_source,
-                target_patrol_path=all_args.target_patrol_path,
-                target_patrol_names=all_args.target_patrol_names,
+                num_hunters=all_args["num_hunters"],
+                num_blockers=all_args["num_blockers"],
+                world_size=all_args["world_size"],
+                dt=all_args["dt"],
+                capture_radius=all_args["capture_radius"],
+                capture_steps=all_args["capture_steps"],
+                max_steps=all_args["episode_length"],
+                seed=all_args["seed"] + rank * 1000,
+                target_policy_source=all_args["target_policy_source"],
+                target_patrol_path=all_args.get("target_patrol_path"),
+                target_patrol_names=all_args.get("target_patrol_names"),
                 **role_params,
             )
             return env
 
         return init_env
 
-    return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+    return DummyVecEnv([get_env_fn(i) for i in range(all_args["n_eval_rollout_threads"])])
 
 
 def _resolve_config_path(config_path):
@@ -185,34 +197,25 @@ def _load_yaml_mapping(yaml_path):
     return data
 
 
-def _load_scenario_suite(suite_path):
-    # 支持目录模式（每个yaml一个场景）和旧版单文件模式。
-    if not suite_path:
-        return []
-    resolved = _resolve_config_path(suite_path)
+def _load_scenario_suite(split_dir):
+    resolved = _resolve_config_path(split_dir)
+    if not resolved.exists() or not resolved.is_dir():
+        raise ValueError(f"Scenario split directory does not exist: {resolved}")
     required_fields = {
         "num_hunters", "num_blockers", "world_size", "dt", "capture_radius",
         "capture_steps", "episode_length", "seed", "initial_positions", "target_patrol_route_id",
     }
+    files = sorted([p for p in resolved.iterdir() if p.is_file() and p.suffix.lower() in {".yaml", ".yml"}], key=lambda x: x.stem)
     scenarios = []
-    if resolved.is_dir():
-        files = sorted([p for p in resolved.iterdir() if p.suffix.lower() in {".yaml", ".yml"}], key=lambda x: x.stem)
-        for fp in files:
-            if fp.parent.name == "patrol_routes":
-                continue
-            cfg = _load_yaml_mapping(fp)
-            cfg.setdefault("scenario_id", fp.stem)
-            cfg.setdefault("scenario_file", str(fp))
-            scenarios.append(cfg)
-    else:
-        data = _load_yaml_mapping(resolved)
-        scenarios = data.get("scenarios", []) if isinstance(data, dict) else data
+    for fp in files:
+        cfg = _load_yaml_mapping(fp)
+        cfg.setdefault("scenario_id", fp.stem)
+        cfg.setdefault("scenario_file", str(fp))
+        scenarios.append(cfg)
 
     normalized = []
     for idx, sc in enumerate(scenarios):
         sc = dict(sc)
-        if "target_patrol_route_id" not in sc and "target_patrol_name" in sc:
-            sc["target_patrol_route_id"] = sc.get("target_patrol_name")
         missing = sorted(required_fields - set(sc.keys()))
         if missing:
             raise ValueError(f"scenario entry missing fields: {', '.join(missing)}")
@@ -221,98 +224,81 @@ def _load_scenario_suite(suite_path):
     return normalized
 
 
-def _resolve_eval_suite_path(all_args):
-    # 若显式传入 scenario_suite 则优先，否则根据 split 从 config 读取 val/test。
-    if getattr(all_args, "scenario_suite", None):
-        return all_args.scenario_suite
-    split = str(getattr(all_args, "eval_dataset_split", "val")).lower()
-    if split == "test":
-        return getattr(all_args, "scenario_suite_test", None)
-    return getattr(all_args, "scenario_suite_val", None)
+def _flatten_config(node: dict[str, Any]) -> dict[str, Any]:
+    flat = {}
+    for key, value in node.items():
+        if isinstance(value, dict):
+            flat.update(_flatten_config(value))
+        else:
+            if key in flat and flat[key] != value:
+                raise ValueError(f"Conflicting values for key '{key}' in YAML config")
+            flat[key] = value
+    return flat
 
-def parse_args(args, parser):
-    parser.add_argument("--scenario_name", type=str, default="uav_pursuit")
-    parser.add_argument("--scenario_suite", type=str, default=None)
-    parser.add_argument("--scenario_suite_val", type=str, default="datasets/val")
-    parser.add_argument("--scenario_suite_test", type=str, default="datasets/test")
-    parser.add_argument("--eval_dataset_split", type=str, default="val", choices=["val", "test"])
-    parser.add_argument("--train_patrol_route_dir", type=str, default="datasets/val/patrol_routes")
-    parser.add_argument("--num_hunters", type=int, default=3)
-    parser.add_argument("--num_blockers", type=int, default=0)
-    parser.add_argument("--world_size", type=float, default=1.0)
-    parser.add_argument("--dt", type=float, default=0.1)
-    parser.add_argument("--capture_radius", type=float, default=0.12)
-    parser.add_argument("--capture_steps", type=int, default=5)
-    parser.add_argument("--gif_interval", type=int, default=10)
-    parser.add_argument("--gif_frame_duration", type=float, default=0.1)
-    parser.add_argument("--max_speed_hunter", type=float, default=1.2)
-    parser.add_argument("--max_speed_blocker", type=float, default=0.9)
-    parser.add_argument("--max_speed_target", type=float, default=1.0)
-    parser.add_argument("--perception_hunter", type=float, default=0.8)
-    parser.add_argument("--perception_blocker", type=float, default=1.2)
-    parser.add_argument("--perception_target", type=float, default=0.8)
-    parser.add_argument("--speed_penalty", type=float, default=0.05)
-    parser.add_argument("--interactive_perception_confirm", type=lambda x: str(x).lower() in ["1", "true", "yes"], default=True)
 
-    config_only = argparse.ArgumentParser(add_help=False)
-    config_only.add_argument("--config", type=str, default=None)
-    known_args, _ = config_only.parse_known_args(args)
-    config_path = None
+def _resolve_config_arg(args):
+    if not args:
+        return "config/pursuit3v1.yaml"
     if len(args) == 1 and not args[0].startswith("-"):
-        config_path = args[0]
-    else:
-        config_path = known_args.config
+        return args[0]
+    for idx, arg in enumerate(args):
+        if arg == "--config" and idx + 1 < len(args):
+            return args[idx + 1]
+    return "config/pursuit3v1.yaml"
 
-    if config_path is None:
-        config_path = "config/pursuit3v1.yaml"
 
+def parse_training_config(args):
+    config_path = _resolve_config_arg(args)
     resolved_config = _resolve_config_path(config_path)
-    all_args, _ = parse_args_with_yaml(
-        [],
-        parser,
-        default_config=str(resolved_config),
-        require_config=True,
-    )
-    all_args.num_agents = all_args.num_hunters + all_args.num_blockers + 1
-    all_args.scenario_suite_data = _load_scenario_suite(_resolve_eval_suite_path(all_args))
-    all_args.test_suite_data = _load_scenario_suite(getattr(all_args, "scenario_suite_test", None))
-    return all_args, str(resolved_config)
+    yaml_data = _load_yaml_mapping(resolved_config)
+    all_args = _flatten_config(yaml_data)
+
+    dataset_root = Path(all_args.get("dataset_root", "datasets"))
+    all_args["scenario_suite_val"] = str(dataset_root / "val")
+    all_args["scenario_suite_test"] = str(dataset_root / "test")
+    all_args.setdefault("eval_dataset_split", "val")
+    all_args.setdefault("train_patrol_route_dir", str(dataset_root / "val" / "patrol_routes"))
+    all_args.setdefault("interactive_perception_confirm", False)
+
+    all_args["num_agents"] = all_args["num_hunters"] + all_args["num_blockers"] + 1
+    all_args["scenario_suite_data"] = _load_scenario_suite(all_args["scenario_suite_val"])
+    all_args["test_suite_data"] = _load_scenario_suite(all_args["scenario_suite_test"])
+    return ConfigDict(all_args), str(resolved_config)
 
 
 def main(args):
-    parser = get_config()
-    all_args, config_path = parse_args(args, parser)
+    all_args, config_path = parse_training_config(args)
 
-    if all_args.algorithm_name == "rmappo":
-        assert all_args.use_recurrent_policy or all_args.use_naive_recurrent_policy, "check recurrent policy!"
-    elif all_args.algorithm_name == "mappo":
-        assert all_args.use_recurrent_policy is False and all_args.use_naive_recurrent_policy is False, "check recurrent policy!"
+    if all_args["algorithm_name"] == "rmappo":
+        assert all_args["use_recurrent_policy"] or all_args["use_naive_recurrent_policy"], "check recurrent policy!"
+    elif all_args["algorithm_name"] == "mappo":
+        assert all_args["use_recurrent_policy"] is False and all_args["use_naive_recurrent_policy"] is False, "check recurrent policy!"
     else:
         raise NotImplementedError
 
-    if all_args.cuda and torch.cuda.is_available():
+    if all_args["cuda"] and torch.cuda.is_available():
         try:
             torch.cuda.set_device(0)
             torch.cuda.init()
             _ = torch.randn(1, 1, device="cuda") @ torch.randn(1, 1, device="cuda")
             device = torch.device("cuda:0")
-            if all_args.cuda_deterministic:
+            if all_args["cuda_deterministic"]:
                 torch.backends.cudnn.benchmark = False
                 torch.backends.cudnn.deterministic = True
         except Exception as exc:
             device = torch.device("cpu")
-            all_args.cuda = False
+            all_args["cuda"] = False
     else:
         device = torch.device("cpu")
 
-    torch.set_num_threads(all_args.n_training_threads)
+    torch.set_num_threads(all_args["n_training_threads"])
 
     run_dir = (
         Path(os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + "/results")
-        / all_args.env_name
-        / all_args.scenario_name
-        / all_args.algorithm_name
-        / all_args.experiment_name
+        / all_args["env_name"]
+        / all_args["scenario_name"]
+        / all_args["algorithm_name"]
+        / all_args["experiment_name"]
     )
     os.makedirs(str(run_dir), exist_ok=True)
 
@@ -333,34 +319,34 @@ def main(args):
         config_target.write_text(config_file.read_text(encoding="utf-8"), encoding="utf-8")
 
     setproctitle.setproctitle(
-        str(all_args.algorithm_name)
+        str(all_args["algorithm_name"])
         + "-"
-        + str(all_args.env_name)
+        + str(all_args["env_name"])
         + "-"
-        + str(all_args.experiment_name)
+        + str(all_args["experiment_name"])
         + "@"
-        + str(all_args.user_name)
+        + str(all_args["user_name"])
     )
 
-    torch.manual_seed(all_args.seed)
+    torch.manual_seed(all_args["seed"])
     if device.type == "cuda":
-        torch.cuda.manual_seed_all(all_args.seed)
-    np.random.seed(all_args.seed)
+        torch.cuda.manual_seed_all(all_args["seed"])
+    np.random.seed(all_args["seed"])
 
-    if all_args.interactive_perception_confirm:
+    if all_args["interactive_perception_confirm"]:
         if sys.stdin.isatty():
             _interactive_confirm_perception(all_args)
         else:
             print("Non-interactive session detected; skipping perception confirmation.")
 
     envs = make_train_env(all_args)
-    eval_envs = make_eval_env(all_args) if all_args.use_eval else None
+    eval_envs = make_eval_env(all_args) if all_args["use_eval"] else None
 
     config = {
         "all_args": all_args,
         "envs": envs,
         "eval_envs": eval_envs,
-        "num_agents": all_args.num_agents,
+        "num_agents": all_args["num_agents"],
         "device": device,
         "run_dir": run_dir,
     }
@@ -369,7 +355,7 @@ def main(args):
     runner.run()
 
     envs.close()
-    if all_args.use_eval and eval_envs is not envs:
+    if all_args["use_eval"] and eval_envs is not envs:
         eval_envs.close()
 
     runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))

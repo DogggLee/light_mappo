@@ -1,4 +1,3 @@
-import json
 import shutil
 import time
 from pathlib import Path
@@ -29,12 +28,7 @@ class UavPursuitRunner(EnvRunner):
         # val/test 场景评估 GIF 输出目录。
         self.eval_gif_dir = Path(self.run_dir) / "eval_gifs"
         self.eval_gif_dir.mkdir(parents=True, exist_ok=True)
-        self.target_patrol_names = self._normalize_name_list(getattr(self.all_args, "target_patrol_names", None))
-        self.target_patrol_switch_interval = int(getattr(self.all_args, "target_patrol_switch_interval", 0))
-        self.eval_random_patrol_routes = int(getattr(self.all_args, "eval_random_patrol_routes", 0))
-        self.eval_random_patrol_points = int(getattr(self.all_args, "eval_random_patrol_points", 4))
         self._patrol_rng = np.random.RandomState(self.all_args.seed + 2027)
-        self._current_patrol_name = None
         self._best_train_avg_reward = None
         self._best_eval_avg_reward = None
         self._best_capture_success_rate = None
@@ -77,56 +71,12 @@ class UavPursuitRunner(EnvRunner):
         if lines:
             print(f"[step {int(total_num_steps)}] " + " | ".join(lines))
 
-    @staticmethod
-    def _normalize_name_list(names):
-        if names is None:
-            return None
-        if isinstance(names, (list, tuple)):
-            cleaned = [str(n).strip() for n in names if str(n).strip()]
-            return cleaned or None
-        text = str(names).strip()
-        if not text:
-            return None
-        return [n.strip() for n in text.replace(";", ",").split(",") if n.strip()]
-
-    def _sample_patrol_name(self):
-        if not self.target_patrol_names:
-            return None
-        return self._patrol_rng.choice(self.target_patrol_names)
-
-    def _maybe_switch_patrol_route(self, episode_idx, force=False):
-        if self.target_policy_source != "patrol":
-            return
-        if not self.target_patrol_names:
-            return
-        if force or (self.target_patrol_switch_interval > 0 and episode_idx % self.target_patrol_switch_interval == 0):
-            name = self._sample_patrol_name()
-            if name is not None:
-                self.envs.set_target_patrol_route(name)
-                if self.eval_envs is not None:
-                    self.eval_envs.set_target_patrol_route(name)
-                self._current_patrol_name = name
-
-    def _generate_random_patrol_routes(self, count, points):
-        routes = []
-        count = max(0, int(count))
-        points = max(2, int(points))
-        for _ in range(count):
-            route = self._patrol_rng.uniform(0.0, 1.0, size=(points, 2)).astype(np.float32)
-            routes.append(route)
-        return routes
-
-
     def _load_patrol_waypoints_from_file(self, route_file):
-        # 统一读取 yaml/json 巡逻路径文件。
+        # 统一读取 datasets/<split>/patrol_routes 下的 yaml 巡逻路径文件。
         if route_file is None:
             return None
         route_path = Path(route_file)
-        text = route_path.read_text(encoding="utf-8")
-        if route_path.suffix.lower() == ".json":
-            payload = json.loads(text)
-        else:
-            payload = yaml.safe_load(text) or {}
+        payload = yaml.safe_load(route_path.read_text(encoding="utf-8")) or {}
         if isinstance(payload, dict):
             return payload.get("waypoints", payload)
         return payload
@@ -144,7 +94,7 @@ class UavPursuitRunner(EnvRunner):
         if route_stem.isdigit():
             candidates.append(route_stem.zfill(3))
         for stem in candidates:
-            for ext in (".yaml", ".yml", ".json"):
+            for ext in (".yaml", ".yml"):
                 fp = base_dir / f"{stem}{ext}"
                 if fp.exists():
                     return fp
@@ -152,10 +102,10 @@ class UavPursuitRunner(EnvRunner):
 
     def _sample_train_patrol_route(self):
         # 训练阶段也采用与 val/test 一致的 patrol_routes 文件管理。
-        route_dir = Path(getattr(self.all_args, "train_patrol_route_dir", ""))
+        route_dir = Path(getattr(self.all_args, "scenario_suite_val", "")) / "patrol_routes"
         if not route_dir.exists():
             return None
-        files = sorted([p for p in route_dir.iterdir() if p.suffix.lower() in {".yaml", ".yml", ".json"}], key=lambda x: x.stem)
+        files = sorted([p for p in route_dir.iterdir() if p.suffix.lower() in {".yaml", ".yml"}], key=lambda x: x.stem)
         if not files:
             return None
         return files[self._patrol_rng.randint(0, len(files))]
@@ -175,7 +125,6 @@ class UavPursuitRunner(EnvRunner):
 
     def run(self):
         # 训练阶段默认以 val 集进行评估，并维护三类最优模型。
-        self._maybe_switch_patrol_route(0, force=True)
         self.warmup()
         start = time.time()
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
@@ -189,9 +138,6 @@ class UavPursuitRunner(EnvRunner):
                     self.envs.set_target_patrol_waypoints(route, route_name=route_file.stem)
                     if self.eval_envs is not None:
                         self.eval_envs.set_target_patrol_waypoints(route, route_name=route_file.stem)
-            else:
-                self._maybe_switch_patrol_route(episode)
-
             if self.use_linear_lr_decay:
                 for group_name in self.group_order:
                     self.trainers[group_name].policy.lr_decay(episode, episodes)
@@ -243,12 +189,12 @@ class UavPursuitRunner(EnvRunner):
 
     @torch.no_grad()
     def _save_training_gif(self, episode_idx):
-        frames = self._collect_episode_frames(episode_idx, self._current_patrol_name)
+        frames = self._collect_episode_frames(episode_idx)
         gif_path = self.gif_dir / f"episode_{episode_idx:04d}.gif"
         imageio.mimsave(str(gif_path), frames, duration=self.gif_frame_duration)
 
     @torch.no_grad()
-    def _collect_episode_frames(self, episode_idx, patrol_name=None, scenario=None, mode=None):
+    def _collect_episode_frames(self, episode_idx, scenario=None, mode=None):
         env = MultiUavPursuitEnv(
             num_hunters=self.all_args.num_hunters,
             num_blockers=self.all_args.num_blockers,
@@ -273,8 +219,6 @@ class UavPursuitRunner(EnvRunner):
             env.apply_scenario_config(scenario)
         if mode is not None:
             env.target_policy_source = mode
-        if patrol_name:
-            env.set_target_patrol_route(patrol_name)
         if scenario is not None and mode == "patrol":
             route_file = self._resolve_route_file(scenario)
             route = self._load_patrol_waypoints_from_file(route_file) if route_file else None
@@ -374,42 +318,6 @@ class UavPursuitRunner(EnvRunner):
         if path.exists():
             return str(path)
         raise FileNotFoundError(f"Target policy model not found: {path}")
-
-    def _resolve_patrol_route_path(self, scenario):
-        # 巡逻路径按序号组织在 datasets/<split>/patrol_routes/<idx>.yaml。
-        route_id = scenario.get("target_patrol_route_id")
-        if route_id in (None, "", "null"):
-            return None
-        route_stem = str(route_id).strip()
-        # 兼容 route_id 被 YAML 解析为整数的情况（如 001 -> 1）。
-        route_stem_candidates = [route_stem]
-        if route_stem.isdigit():
-            route_stem_candidates.append(route_stem.zfill(3))
-        if scenario.get("scenario_file"):
-            base_dir = Path(scenario["scenario_file"]).resolve().parent / "patrol_routes"
-        else:
-            base_dir = Path("datasets")
-        for stem in route_stem_candidates:
-            for ext in (".yaml", ".yml", ".json"):
-                candidate = base_dir / f"{stem}{ext}"
-                if candidate.exists():
-                    return candidate
-        raise FileNotFoundError(f"Patrol route file not found for route_id={route_stem} in {base_dir}")
-
-    def _load_patrol_waypoints(self, route_path):
-        # 支持 yaml/json 两种巡逻路径文件，并统一提取 waypoints 列表。
-        if route_path is None:
-            return None
-        text = route_path.read_text(encoding="utf-8")
-        if route_path.suffix.lower() == ".json":
-            payload = json.loads(text)
-        else:
-            payload = yaml.safe_load(text) or {}
-        if isinstance(payload, dict):
-            waypoints = payload.get("waypoints", payload)
-        else:
-            waypoints = payload
-        return waypoints
 
     @torch.no_grad()
     def eval(self, total_num_steps, split="val", save_gif=True, model_tag="latest"):
