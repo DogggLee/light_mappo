@@ -41,6 +41,7 @@ uav_pursuit:
   perception_hunter: 0.15
   perception_blocker: 0.35
   perception_target: 0.25
+  speed_penalty: 0.05
   interactive_perception_confirm: true
 
 # Model/network settings

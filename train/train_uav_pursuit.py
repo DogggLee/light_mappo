@@ -37,6 +37,7 @@ def _get_role_params(all_args):
         "perception_hunter": all_args.perception_hunter,
         "perception_blocker": all_args.perception_blocker,
         "perception_target": all_args.perception_target,
+        "speed_penalty": all_args.speed_penalty,
     }
 
 
@@ -189,6 +190,7 @@ def parse_args(args, parser):
     parser.add_argument("--perception_hunter", type=float, default=0.8)
     parser.add_argument("--perception_blocker", type=float, default=1.2)
     parser.add_argument("--perception_target", type=float, default=0.8)
+    parser.add_argument("--speed_penalty", type=float, default=0.05)
     parser.add_argument("--interactive_perception_confirm", type=lambda x: str(x).lower() in ["1", "true", "yes"], default=True)
 
     config_only = argparse.ArgumentParser(add_help=False)

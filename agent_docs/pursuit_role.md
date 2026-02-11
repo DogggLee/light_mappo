@@ -16,7 +16,7 @@
 Per-agent observation vector:
 - Own position `(x, y)` and velocity `(vx, vy)`.
 - For every other agent: relative position `(dx, dy)`, relative velocity `(dvx, dvy)`, and distance `d`.
-  - If the other agent is outside the observer’s perception range, `(dx, dy, d)` is zeroed.
+  - If the other agent is outside the observer’s perception range, `(dx, dy, dvx, dvy, d)` is zeroed.
   - For pursuers, target observations are shared within the team when any pursuer detects the target.
 
 Dimension: `obs_dim = 4 + (agent_num - 1) * 5`.
@@ -37,6 +37,5 @@ Let `d` be the distance from a pursuer to the target, and `min_distance` be the 
 
 ## Capture Condition
 Capture occurs when any hunter stays within `capture_radius` of the target for `capture_steps` consecutive steps.
-
 
 
