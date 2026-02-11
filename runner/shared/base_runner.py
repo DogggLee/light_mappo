@@ -180,24 +180,27 @@ class Runner(object):
         })
         self._save_metrics()
 
-    def record_eval_metrics(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps):
+    def record_eval_metrics(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps, scenario_id="default"):
+        # 在评估指标中持久化 scenario_id，支持跨场景可追溯对比。
         self.metrics.setdefault("eval", []).append({
             "total_num_steps": int(total_num_steps),
+            "scenario_id": str(scenario_id),
             "eval_average_episode_rewards": float(eval_average_episode_rewards),
             "capture_success_rate": float(capture_success_rate),
             "avg_capture_steps": float(avg_capture_steps) if avg_capture_steps is not None else None,
         })
         self._save_metrics()
-        self._append_eval_metrics_csv(total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps)
+        self._append_eval_metrics_csv(total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps, scenario_id)
 
-    def _append_eval_metrics_csv(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps):
+    def _append_eval_metrics_csv(self, total_num_steps, eval_average_episode_rewards, capture_success_rate, avg_capture_steps, scenario_id):
         write_header = not self.eval_metrics_csv.exists()
         with self.eval_metrics_csv.open("a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if write_header:
-                writer.writerow(["total_num_steps", "eval_average_episode_rewards", "capture_success_rate", "avg_capture_steps"])
+                writer.writerow(["total_num_steps", "scenario_id", "eval_average_episode_rewards", "capture_success_rate", "avg_capture_steps"])
             writer.writerow([
                 int(total_num_steps),
+                str(scenario_id),
                 float(eval_average_episode_rewards),
                 float(capture_success_rate),
                 "" if avg_capture_steps is None else float(avg_capture_steps),

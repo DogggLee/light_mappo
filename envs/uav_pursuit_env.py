@@ -74,6 +74,7 @@ class MultiUavPursuitEnv:
 
         self.positions = np.zeros((self.agent_num, 2), dtype=np.float32)
         self.velocities = np.zeros((self.agent_num, 2), dtype=np.float32)
+        self.fixed_initial_positions = None
         self._capture_counter = 0
         self._step_count = 0
 
@@ -181,8 +182,39 @@ class MultiUavPursuitEnv:
         # own pos (2) + own vel (2) + per-other: rel pos (2) + rel vel (2) + dist (1)
         return 4 + (self.agent_num - 1) * 5
 
+    def set_initial_positions(self, initial_positions=None):
+        # 支持固定初始位姿，便于验证集/测试集可复现实验。
+        if initial_positions is None:
+            self.fixed_initial_positions = None
+            return
+        arr = np.asarray(initial_positions, dtype=np.float32)
+        if arr.shape != (self.agent_num, 2):
+            raise ValueError(f"initial_positions shape must be ({self.agent_num}, 2), got {arr.shape}")
+        self.fixed_initial_positions = np.clip(arr, -self.world_size, self.world_size)
+
+    def apply_scenario_config(self, scenario):
+        # 按场景覆盖关键环境参数（仅评估时调用，不影响训练主配置）。
+        if scenario is None:
+            return
+        self.world_size = float(scenario.get("world_size", self.world_size))
+        self.dt = float(scenario.get("dt", self.dt))
+        self.capture_radius = float(scenario.get("capture_radius", self.capture_radius))
+        self.capture_steps = int(scenario.get("capture_steps", self.capture_steps))
+        self.max_steps = int(scenario.get("episode_length", self.max_steps))
+        if "seed" in scenario and scenario["seed"] is not None:
+            self.seed(int(scenario["seed"]))
+        if "target_policy_source" in scenario and scenario["target_policy_source"] is not None:
+            self.target_policy_source = str(scenario["target_policy_source"])
+        if "target_patrol_name" in scenario and scenario["target_patrol_name"]:
+            self.set_target_patrol_route(str(scenario["target_patrol_name"]))
+        self.set_initial_positions(scenario.get("initial_positions"))
+
     def reset(self):
-        self.positions = self.np_random.uniform(low=-self.world_size, high=self.world_size, size=(self.agent_num, 2)).astype(np.float32)
+        # 若配置了固定初始位置，则优先使用固定值；否则继续随机初始化。
+        if self.fixed_initial_positions is None:
+            self.positions = self.np_random.uniform(low=-self.world_size, high=self.world_size, size=(self.agent_num, 2)).astype(np.float32)
+        else:
+            self.positions = self.fixed_initial_positions.copy()
         self.velocities = np.zeros((self.agent_num, 2), dtype=np.float32)
         self._capture_counter = 0
         self._step_count = 0

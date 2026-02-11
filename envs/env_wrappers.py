@@ -59,6 +59,13 @@ class DummyVecEnv():
             if hasattr(env, "set_target_patrol_waypoints"):
                 env.set_target_patrol_waypoints(waypoints, route_name=route_name)
 
+
+    def apply_scenario_config(self, scenario):
+        # 向量化环境广播场景参数，确保每个并行环境使用同一评估场景。
+        for env in self.envs:
+            if hasattr(env, "apply_scenario_config"):
+                env.apply_scenario_config(scenario)
+
     def close(self):
         for env in self.envs:
             env.close()

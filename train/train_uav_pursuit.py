@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+import yaml
+
 import matplotlib.pyplot as plt
 import numpy as np
 import setproctitle
@@ -174,8 +176,86 @@ def _resolve_config_path(config_path):
     return (repo_root / path).resolve()
 
 
+def _load_yaml_mapping(yaml_path):
+    with yaml_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Scenario file must be a mapping: {yaml_path}")
+    return data
+
+
+def _load_scenario_suite(suite_path):
+    # 支持两种组织方式：单一 suite 文件，或 datasets/val、datasets/test 目录中的多文件场景。
+    if not suite_path:
+        return None
+
+    resolved = _resolve_config_path(suite_path)
+    # 强制校验场景字段完整性，避免评估时出现隐式默认值导致的不可复现。
+    required_fields = {
+        "num_hunters",
+        "num_blockers",
+        "world_size",
+        "dt",
+        "capture_radius",
+        "capture_steps",
+        "episode_length",
+        "seed",
+        "initial_positions",
+        "target_policy_source",
+        "target_patrol_route_id",
+    }
+
+    scenarios = []
+    if resolved.is_dir():
+        # 目录模式：每个 yaml 文件代表一个场景，文件名即场景名（如 001.yaml）。
+        scenario_files = sorted(
+            [p for p in resolved.iterdir() if p.suffix.lower() in {".yaml", ".yml"}],
+            key=lambda path: path.stem,
+        )
+        if not scenario_files:
+            raise ValueError(f"No yaml scenario files found in directory: {resolved}")
+        for file_path in scenario_files:
+            scenario_cfg = _load_yaml_mapping(file_path)
+            scenario_cfg.setdefault("scenario_id", file_path.stem)
+            scenario_cfg.setdefault("scenario_name", file_path.stem)
+            scenario_cfg.setdefault("scenario_file", str(file_path))
+            scenarios.append(scenario_cfg)
+    else:
+        # 兼容旧版 suite 文件格式。
+        with resolved.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        if isinstance(data, dict):
+            scenarios = data.get("scenarios", [])
+        elif isinstance(data, list):
+            scenarios = data
+        else:
+            raise ValueError("scenario_suite YAML must be a list or contain a 'scenarios' list")
+        if not isinstance(scenarios, list):
+            raise ValueError("scenario_suite 'scenarios' must be a list")
+
+    normalized = []
+    for idx, scenario in enumerate(scenarios):
+        if not isinstance(scenario, dict):
+            raise ValueError(f"scenario entry at index {idx} must be a mapping")
+        missing = sorted(required_fields - set(scenario.keys()))
+        if missing:
+            raise ValueError(f"scenario entry at index {idx} missing fields: {', '.join(missing)}")
+        scenario_cfg = dict(scenario)
+        # 兼容旧字段：若仍使用 target_patrol_name，则迁移到新的 route_id 字段。
+        if "target_patrol_route_id" not in scenario_cfg and "target_patrol_name" in scenario_cfg:
+            scenario_cfg["target_patrol_route_id"] = scenario_cfg.get("target_patrol_name")
+        scenario_cfg.setdefault("scenario_id", f"scenario_{idx}")
+        scenario_cfg.setdefault("target_policy_model_path", None)
+        # eval_target_modes 可显式指定为 ["patrol", "train"] 以在测试时分别统计两种成功率。
+        scenario_cfg.setdefault("eval_target_modes", [scenario_cfg.get("target_policy_source", "train")])
+        normalized.append(scenario_cfg)
+    return normalized
+
+
 def parse_args(args, parser):
     parser.add_argument("--scenario_name", type=str, default="uav_pursuit")
+    # 评估数据集路径：可传单个 suite.yaml，或 datasets/val、datasets/test 这类目录。
+    parser.add_argument("--scenario_suite", type=str, default=None)
     parser.add_argument("--num_hunters", type=int, default=3)
     parser.add_argument("--num_blockers", type=int, default=0)
     parser.add_argument("--world_size", type=float, default=1.0)
@@ -213,6 +293,8 @@ def parse_args(args, parser):
         require_config=True,
     )
     all_args.num_agents = all_args.num_hunters + all_args.num_blockers + 1
+    # 在启动阶段预解析场景集，Runner 直接消费结构化数据。
+    all_args.scenario_suite_data = _load_scenario_suite(all_args.scenario_suite)
     return all_args, str(resolved_config)
 
 
