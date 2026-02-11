@@ -74,6 +74,7 @@ class MultiUavPursuitEnv:
 
         self.positions = np.zeros((self.agent_num, 2), dtype=np.float32)
         self.velocities = np.zeros((self.agent_num, 2), dtype=np.float32)
+        # 评估场景可指定固定初始位置，用于复现实验。
         self.fixed_initial_positions = None
         self._capture_counter = 0
         self._step_count = 0
@@ -182,8 +183,9 @@ class MultiUavPursuitEnv:
         # own pos (2) + own vel (2) + per-other: rel pos (2) + rel vel (2) + dist (1)
         return 4 + (self.agent_num - 1) * 5
 
+
     def set_initial_positions(self, initial_positions=None):
-        # 支持固定初始位姿，便于验证集/测试集可复现实验。
+        # 设置固定初始位置；若为空则回退到随机初始化。
         if initial_positions is None:
             self.fixed_initial_positions = None
             return
@@ -193,7 +195,7 @@ class MultiUavPursuitEnv:
         self.fixed_initial_positions = np.clip(arr, -self.world_size, self.world_size)
 
     def apply_scenario_config(self, scenario):
-        # 按场景覆盖关键环境参数（仅评估时调用，不影响训练主配置）。
+        # 评估时按场景覆盖环境参数。
         if scenario is None:
             return
         self.world_size = float(scenario.get("world_size", self.world_size))
@@ -205,12 +207,9 @@ class MultiUavPursuitEnv:
             self.seed(int(scenario["seed"]))
         if "target_policy_source" in scenario and scenario["target_policy_source"] is not None:
             self.target_policy_source = str(scenario["target_policy_source"])
-        if "target_patrol_name" in scenario and scenario["target_patrol_name"]:
-            self.set_target_patrol_route(str(scenario["target_patrol_name"]))
         self.set_initial_positions(scenario.get("initial_positions"))
 
     def reset(self):
-        # 若配置了固定初始位置，则优先使用固定值；否则继续随机初始化。
         if self.fixed_initial_positions is None:
             self.positions = self.np_random.uniform(low=-self.world_size, high=self.world_size, size=(self.agent_num, 2)).astype(np.float32)
         else:

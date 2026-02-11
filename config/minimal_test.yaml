@@ -43,6 +43,8 @@ uav_pursuit:
   perception_target: 0.25
   speed_penalty: 0.05
   interactive_perception_confirm: true
+  # 训练时 patrol 轨迹目录，和 val/test 使用同一文件管理方式
+  train_patrol_route_dir: datasets/val/patrol_routes
 
 # Model/network settings
 model:
@@ -103,6 +105,9 @@ eval:
   use_eval: true
   eval_interval: 2
   eval_episodes: 5
+  scenario_suite_val: datasets/val
+  scenario_suite_test: datasets/test
+  eval_dataset_split: val
 
 # Render settings
 render:
