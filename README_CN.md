@@ -82,3 +82,60 @@ class EnvCore(object):
 
 [MIT](LICENSE) © tinyzqh
 
+
+## 验证集/测试集（Scenario Dataset）
+
+为保证评估可复现，推荐按目录组织评估数据集：
+
+- `datasets/val/`：验证集场景（调参与回归）。
+- `datasets/test/`：测试集场景（最终对比）。
+- `datasets/val/patrol_routes/` 与 `datasets/test/patrol_routes/`：巡逻路径库，每个文件一个路径（建议数字编号）。
+
+每个场景使用**单独的一个 yaml 文件**表示，文件名即场景名称（建议数字编号，如 `001.yaml`、`002.yaml`）。
+
+每个场景文件需包含字段：
+
+- `num_hunters`
+- `num_blockers`
+- `world_size`
+- `dt`
+- `capture_radius`
+- `capture_steps`
+- `episode_length`
+- `seed`
+- `initial_positions`
+- `target_policy_source`
+- `target_patrol_route_id`（仅填写巡逻路径序号，例如 `001`）
+- `target_policy_model_path`（新增：Target 外部策略模型路径，可放在数据集目录下，或指向训练输出模型）
+- `eval_target_modes`（建议：`[patrol, train]`，用于分别统计两种 Target 模式下的围捕成功率）
+
+场景文件不再直接写 `target_patrol_name`，而是通过 `target_patrol_route_id` 去对应目录内的 `patrol_routes/{idx}.yaml`。
+
+运行时可直接把目录传给 `--scenario_suite`：
+
+```bash
+python train/train_uav_pursuit.py \
+  --config config/minimal_test.yaml \
+  --scenario_suite datasets/val
+```
+
+评估阶段会：
+
+1. 按目录中每个场景文件逐个执行；
+2. 对 `eval_target_modes` 中的每个模式分别统计成功率（patrol / train）；
+3. 将结果落盘到 `metrics_eval.csv`（含 `scenario_id` 字段）；
+4. 为每个场景保存 GIF 到 `results/.../run*/eval_gifs/val_{idx}/` 目录。
+
+
+
+## Related Efforts
+
+- [on-policy](https://github.com/marlbenchmark/on-policy) - 💌 Learn the author implementation of MAPPO.
+
+## Maintainers
+
+[@tinyzqh](https://github.com/tinyzqh).
+
+## License
+
+[MIT](LICENSE) © tinyzqh

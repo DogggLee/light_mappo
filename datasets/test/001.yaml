@@ -1,0 +1,17 @@
+num_hunters: 3
+num_blockers: 0
+world_size: 1.3
+dt: 0.1
+capture_radius: 0.10
+capture_steps: 6
+episode_length: 120
+seed: 303
+initial_positions:
+  - [-0.8, -0.2]
+  - [-0.8, 0.2]
+  - [-0.6, 0.0]
+  - [0.9, 0.8]
+target_policy_source: patrol
+target_patrol_route_id: "001"
+target_policy_model_path: null
+eval_target_modes: [patrol]

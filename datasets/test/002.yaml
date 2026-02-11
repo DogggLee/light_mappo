@@ -1,0 +1,17 @@
+num_hunters: 3
+num_blockers: 0
+world_size: 1.5
+dt: 0.08
+capture_radius: 0.09
+capture_steps: 6
+episode_length: 150
+seed: 404
+initial_positions:
+  - [-0.9, 0.0]
+  - [-0.7, 0.4]
+  - [-0.7, -0.4]
+  - [0.8, 0.0]
+target_policy_source: train
+target_patrol_route_id: "002"
+target_policy_model_path: null
+eval_target_modes: [patrol, train]

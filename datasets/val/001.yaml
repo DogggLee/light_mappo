@@ -1,0 +1,18 @@
+# val 场景 001：仅评估 patrol 模式
+num_hunters: 3
+num_blockers: 0
+world_size: 1.0
+dt: 0.1
+capture_radius: 0.12
+capture_steps: 4
+episode_length: 80
+seed: 101
+initial_positions:
+  - [-0.6, 0.0]
+  - [-0.4, 0.2]
+  - [-0.4, -0.2]
+  - [0.5, 0.0]
+target_policy_source: patrol
+target_patrol_route_id: "001"
+target_policy_model_path: null
+eval_target_modes: [patrol]
