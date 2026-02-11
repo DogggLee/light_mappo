@@ -25,6 +25,7 @@ class MultiUavPursuitEnv:
         perception_hunter=0.8,
         perception_blocker=1.2,
         perception_target=0.8,
+        speed_penalty=0.00,
         target_patrol_names=None,
     ):
         if num_hunters < 1:
@@ -69,6 +70,7 @@ class MultiUavPursuitEnv:
             "blocker": float(perception_blocker),
             "target": float(perception_target),
         }
+        self.speed_penalty = float(speed_penalty)
 
         self.positions = np.zeros((self.agent_num, 2), dtype=np.float32)
         self.velocities = np.zeros((self.agent_num, 2), dtype=np.float32)
@@ -176,7 +178,8 @@ class MultiUavPursuitEnv:
         return list(self.patrol_routes.keys())
 
     def _calc_obs_dim(self):
-        return 4 + (self.agent_num - 1) * 3
+        # own pos (2) + own vel (2) + per-other: rel pos (2) + rel vel (2) + dist (1)
+        return 4 + (self.agent_num - 1) * 5
 
     def reset(self):
         self.positions = self.np_random.uniform(low=-self.world_size, high=self.world_size, size=(self.agent_num, 2)).astype(np.float32)
@@ -226,6 +229,18 @@ class MultiUavPursuitEnv:
 
     def _get_obs(self):
         obs = []
+        target_idx = self.agent_num - 1
+        target_pos = self.positions[target_idx]
+        target_vel = self.velocities[target_idx]
+
+        pursuer_ids = self.role_groups["hunter"] + self.role_groups["blocker"]
+        target_spotted = False
+        for idx in pursuer_ids:
+            perception = self.perception_ranges[self.role_names[idx]]
+            if np.linalg.norm(target_pos - self.positions[idx]) <= perception:
+                target_spotted = True
+                break
+
         for idx in range(self.agent_num):
             role = self.role_names[idx]
             perception = self.perception_ranges[role]
@@ -235,12 +250,16 @@ class MultiUavPursuitEnv:
             for jdx in range(self.agent_num):
                 if jdx == idx:
                     continue
-                rel = self.positions[jdx] - own_pos
-                dist = np.linalg.norm(rel)
-                if dist <= perception:
-                    other_features.extend([rel[0], rel[1], dist])
+                rel_pos = self.positions[jdx] - own_pos
+                rel_vel = self.velocities[jdx] - own_vel
+                dist = np.linalg.norm(rel_pos)
+                in_range = dist <= perception
+                if jdx == target_idx and role in ("hunter", "blocker") and target_spotted:
+                    in_range = True
+                if in_range:
+                    other_features.extend([rel_pos[0], rel_pos[1], rel_vel[0], rel_vel[1], dist])
                 else:
-                    other_features.extend([0.0, 0.0, 0.0])
+                    other_features.extend([0.0, 0.0, 0.0, 0.0, 0.0])
             obs_vec = np.concatenate([own_pos, own_vel, np.array(other_features, dtype=np.float32)])
             obs.append(obs_vec.astype(np.float32))
         return np.stack(obs, axis=0)
@@ -268,6 +287,9 @@ class MultiUavPursuitEnv:
                 rewards[idx] = -0.7 * dist + (6.0 if capture else 0.0)
 
         rewards[target_idx] = min_distance - (12.0 if capture else 0.0)
+        if self.speed_penalty > 0.0:
+            speeds = np.linalg.norm(self.velocities, axis=1)
+            rewards -= self.speed_penalty * (speeds ** 2)
         return rewards, capture
 
     def _get_infos(self, capture):

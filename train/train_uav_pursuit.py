@@ -4,6 +4,7 @@
 # @File    : train_uav_pursuit.py
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -159,7 +160,17 @@ def make_eval_env(all_args):
 
         return init_env
 
-    return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_rollout_threads)])
+    return DummyVecEnv([get_env_fn(i) for i in range(all_args.n_eval_rollout_threads)])
+
+
+def _resolve_config_path(config_path):
+    if not config_path:
+        return None
+    path = Path(config_path)
+    if path.is_absolute():
+        return path
+    repo_root = Path(__file__).resolve().parent.parent
+    return (repo_root / path).resolve()
 
 
 def parse_args(args, parser):
@@ -180,15 +191,27 @@ def parse_args(args, parser):
     parser.add_argument("--perception_target", type=float, default=0.8)
     parser.add_argument("--interactive_perception_confirm", type=lambda x: str(x).lower() in ["1", "true", "yes"], default=True)
 
-    default_config = Path(__file__).resolve().parent / "config" / "pursuit3v1.yaml"
-    all_args, config_path = parse_args_with_yaml(
-        args,
+    config_only = argparse.ArgumentParser(add_help=False)
+    config_only.add_argument("--config", type=str, default=None)
+    known_args, _ = config_only.parse_known_args(args)
+    config_path = None
+    if len(args) == 1 and not args[0].startswith("-"):
+        config_path = args[0]
+    else:
+        config_path = known_args.config
+
+    if config_path is None:
+        config_path = "config/pursuit3v1.yaml"
+
+    resolved_config = _resolve_config_path(config_path)
+    all_args, _ = parse_args_with_yaml(
+        [],
         parser,
-        default_config=str(default_config),
+        default_config=str(resolved_config),
         require_config=True,
     )
     all_args.num_agents = all_args.num_hunters + all_args.num_blockers + 1
-    return all_args, config_path
+    return all_args, str(resolved_config)
 
 
 def main(args):
@@ -207,17 +230,14 @@ def main(args):
             torch.cuda.set_device(0)
             torch.cuda.init()
             _ = torch.randn(1, 1, device="cuda") @ torch.randn(1, 1, device="cuda")
-            print("choose to use gpu...")
             device = torch.device("cuda:0")
             if all_args.cuda_deterministic:
                 torch.backends.cudnn.benchmark = False
                 torch.backends.cudnn.deterministic = True
         except Exception as exc:
-            print(f"cuda init failed, fallback to cpu: {exc}")
             device = torch.device("cpu")
             all_args.cuda = False
     else:
-        print("choose to use cpu...")
         device = torch.device("cpu")
 
     torch.set_num_threads(all_args.n_training_threads)
@@ -239,7 +259,8 @@ def main(args):
     curr_run = "run1" if len(exst_run_nums) == 0 else f"run{max(exst_run_nums) + 1}"
     run_dir = run_dir / curr_run
     os.makedirs(str(run_dir), exist_ok=True)
-    print(f"Save results to {str(run_dir)}")
+    print(f"Run dir: {str(run_dir)}")
+    print(f"TensorBoard: tensorboard --logdir {str(run_dir / 'logs')}")
 
     if config_path:
         config_file = Path(config_path)
@@ -262,7 +283,10 @@ def main(args):
     np.random.seed(all_args.seed)
 
     if all_args.interactive_perception_confirm:
-        _interactive_confirm_perception(all_args)
+        if sys.stdin.isatty():
+            _interactive_confirm_perception(all_args)
+        else:
+            print("Non-interactive session detected; skipping perception confirmation.")
 
     envs = make_train_env(all_args)
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None

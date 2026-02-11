@@ -29,6 +29,43 @@ class UavPursuitRunner(EnvRunner):
         self.eval_random_patrol_points = int(getattr(self.all_args, "eval_random_patrol_points", 4))
         self._patrol_rng = np.random.RandomState(self.all_args.seed + 2027)
         self._current_patrol_name = None
+        self._best_train_avg_reward = None
+        self._best_eval_avg_reward = None
+        self._best_capture_success_rate = None
+        self._best_avg_capture_steps = None
+
+    def _maybe_report_best_metrics(
+        self,
+        total_num_steps,
+        train_avg_reward=None,
+        eval_avg_reward=None,
+        capture_success_rate=None,
+        avg_capture_steps=None,
+    ):
+        lines = []
+
+        if train_avg_reward is not None:
+            if self._best_train_avg_reward is None or train_avg_reward > self._best_train_avg_reward:
+                self._best_train_avg_reward = float(train_avg_reward)
+                lines.append(f"best_train_avg_reward: {self._best_train_avg_reward:.4f}")
+
+        if eval_avg_reward is not None:
+            if self._best_eval_avg_reward is None or eval_avg_reward > self._best_eval_avg_reward:
+                self._best_eval_avg_reward = float(eval_avg_reward)
+                lines.append(f"best_eval_avg_reward: {self._best_eval_avg_reward:.4f}")
+
+        if capture_success_rate is not None:
+            if self._best_capture_success_rate is None or capture_success_rate > self._best_capture_success_rate:
+                self._best_capture_success_rate = float(capture_success_rate)
+                lines.append(f"best_capture_success_rate: {self._best_capture_success_rate:.4f}")
+
+        if avg_capture_steps is not None:
+            if self._best_avg_capture_steps is None or avg_capture_steps < self._best_avg_capture_steps:
+                self._best_avg_capture_steps = float(avg_capture_steps)
+                lines.append(f"best_avg_capture_steps: {self._best_avg_capture_steps:.2f}")
+
+        if lines:
+            print(f"[step {int(total_num_steps)}] " + " | ".join(lines))
 
     @staticmethod
     def _normalize_name_list(names):
@@ -94,17 +131,19 @@ class UavPursuitRunner(EnvRunner):
                 self.save()
 
             if episode % self.log_interval == 0:
-                elapsed = time.time() - start
-                fps = int(total_num_steps / elapsed) if elapsed > 0 else 0
-                print(
-                    f"\n Scenario {self.all_args.scenario_name} Algo {self.algorithm_name} Exp {self.experiment_name} updates {episode}/{episodes} episodes, total num timesteps {total_num_steps}/{self.num_env_steps}, FPS {fps}.\n"
-                )
                 avg_rewards = []
                 for group_name in self.group_order:
-                    avg_rewards.append(np.mean(self.buffers[group_name].rewards) * self.episode_length)
+                    group_avg = np.mean(self.buffers[group_name].rewards) * self.episode_length
+                    avg_rewards.append(group_avg)
+                    train_infos.setdefault(group_name, {})
+                    train_infos[group_name]["average_episode_rewards"] = float(group_avg)
                 train_infos["system"] = {"average_episode_rewards": float(np.mean(avg_rewards))}
                 self.log_train(train_infos, total_num_steps)
                 self.record_train_metrics(total_num_steps, train_infos["system"]["average_episode_rewards"])
+                self._maybe_report_best_metrics(
+                    total_num_steps,
+                    train_avg_reward=train_infos["system"]["average_episode_rewards"],
+                )
 
             if (episode + 1) % self.gif_interval == 0:
                 self._save_training_gif(episode + 1)
@@ -277,9 +316,28 @@ class UavPursuitRunner(EnvRunner):
         capture_success_rate = float(np.sum(capture_flags) / total_episodes) if capture_flags else 0.0
         avg_capture_steps = float(np.mean(capture_steps)) if capture_steps else None
 
-        eval_env_infos = {"eval_average_episode_rewards": eval_avg_rewards}
+        eval_env_infos = {
+            "eval_average_episode_rewards": eval_avg_rewards,
+            "eval_capture_success_rate": capture_success_rate,
+        }
+        if avg_capture_steps is not None:
+            eval_env_infos["eval_avg_capture_steps"] = avg_capture_steps
+
+        if eval_episode_rewards:
+            all_ep_rewards = np.concatenate(eval_episode_rewards, axis=0)
+            for group_name, agent_ids in self.policy_groups.items():
+                if not agent_ids:
+                    continue
+                role_avg = float(np.mean(all_ep_rewards[:, agent_ids]))
+                eval_env_infos[f"eval_average_episode_rewards/{group_name}"] = role_avg
         self.log_env(eval_env_infos, total_num_steps)
         self.record_eval_metrics(total_num_steps, eval_avg_rewards, capture_success_rate, avg_capture_steps)
+        self._maybe_report_best_metrics(
+            total_num_steps,
+            eval_avg_reward=eval_avg_rewards,
+            capture_success_rate=capture_success_rate,
+            avg_capture_steps=avg_capture_steps,
+        )
 
     def _draw_fade_traj(self, ax, traj, color):
         if len(traj) < 2:
