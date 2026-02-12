@@ -27,6 +27,11 @@ class MultiUavPursuitEnv:
         perception_target=0.8,
         speed_penalty=0.00,
         target_patrol_names=None,
+        initial_target_estimate_noise_std=0.0,
+        initial_target_estimate_lag_steps=0,
+        pursuer_obs_noise_ratio_min=0.001,
+        pursuer_obs_noise_ratio_max=0.1,
+        max_hunters_for_obs=4,
     ):
         if num_hunters < 1:
             raise ValueError("num_hunters must be >= 1")
@@ -71,6 +76,13 @@ class MultiUavPursuitEnv:
             "target": float(perception_target),
         }
         self.speed_penalty = float(speed_penalty)
+        self.initial_target_estimate_noise_std = max(0.0, float(initial_target_estimate_noise_std))
+        self.initial_target_estimate_lag_steps = max(0, int(initial_target_estimate_lag_steps))
+        self.pursuer_obs_noise_ratio_min = max(0.0, float(pursuer_obs_noise_ratio_min))
+        self.pursuer_obs_noise_ratio_max = max(0.0, float(pursuer_obs_noise_ratio_max))
+        if self.pursuer_obs_noise_ratio_min > self.pursuer_obs_noise_ratio_max:
+            self.pursuer_obs_noise_ratio_min, self.pursuer_obs_noise_ratio_max = self.pursuer_obs_noise_ratio_max, self.pursuer_obs_noise_ratio_min
+        self.max_hunters_for_obs = max(0, int(max_hunters_for_obs))
 
         self.positions = np.zeros((self.agent_num, 2), dtype=np.float32)
         self.velocities = np.zeros((self.agent_num, 2), dtype=np.float32)
@@ -78,6 +90,8 @@ class MultiUavPursuitEnv:
         self.fixed_initial_positions = None
         self._capture_counter = 0
         self._step_count = 0
+        self._target_pos_history = []
+        self._target_belief = {}
 
         self.action_dim = 2
         self.action_space = [spaces.Box(low=-1.0, high=1.0, shape=(self.action_dim,), dtype=np.float32) for _ in range(self.agent_num)]
@@ -181,7 +195,78 @@ class MultiUavPursuitEnv:
 
     def _calc_obs_dim(self):
         # own pos (2) + own vel (2) + per-other: rel pos (2) + rel vel (2) + dist (1)
-        return 4 + (self.agent_num - 1) * 5
+        # + target belief meta: [available, is_exact, age]
+        return 4 + (self.agent_num - 1) * 5 + 3
+
+
+    def _get_pursuer_obs_noise_ratio(self, pursuer_pos, target_pos):
+        # 距离 Target 越近，噪声越小；范围由 [min, max] 比例控制。
+        distance = float(np.linalg.norm(target_pos - pursuer_pos))
+        normalized = np.clip(distance / max(self.world_size * 2.0, 1e-6), 0.0, 1.0)
+        return self.pursuer_obs_noise_ratio_min + (self.pursuer_obs_noise_ratio_max - self.pursuer_obs_noise_ratio_min) * normalized
+
+    def _apply_relative_noise(self, vector, ratio):
+        # 相对噪声：标准差与向量量级成比例。
+        arr = np.asarray(vector, dtype=np.float32)
+        sigma = max(float(ratio), 0.0) * np.maximum(np.abs(arr), 1e-3)
+        noise = self.np_random.normal(0.0, sigma, size=arr.shape).astype(np.float32)
+        return arr + noise
+
+    def _capture_target_measurement(self):
+        target_idx = self.agent_num - 1
+        lag = min(self.initial_target_estimate_lag_steps, len(self._target_pos_history) - 1)
+        lagged_pos = self._target_pos_history[-(lag + 1)].copy()
+        if len(self._target_pos_history) >= lag + 2:
+            prev = self._target_pos_history[-(lag + 2)]
+            lagged_vel = (lagged_pos - prev) / max(self.dt, 1e-6)
+        else:
+            lagged_vel = np.zeros(2, dtype=np.float32)
+
+        if self.initial_target_estimate_noise_std > 0.0:
+            noise = self.np_random.normal(0.0, self.initial_target_estimate_noise_std, size=2).astype(np.float32)
+            lagged_pos = np.clip(lagged_pos + noise, -self.world_size, self.world_size)
+
+        self._target_belief = {}
+        for idx in self.role_groups["hunter"] + self.role_groups["blocker"]:
+            self._target_belief[idx] = {
+                "pos": lagged_pos.copy(),
+                "vel": lagged_vel.copy(),
+                "is_exact": False,
+                "age": 0,
+            }
+        self._target_belief[target_idx] = {
+            "pos": self.positions[target_idx].copy(),
+            "vel": self.velocities[target_idx].copy(),
+            "is_exact": True,
+            "age": 0,
+        }
+
+    def _update_target_beliefs(self):
+        target_idx = self.agent_num - 1
+        target_pos = self.positions[target_idx]
+        target_vel = self.velocities[target_idx]
+
+        for idx in self.role_groups["hunter"] + self.role_groups["blocker"]:
+            belief = self._target_belief.get(idx)
+            if belief is None:
+                continue
+            perception = self.perception_ranges[self.role_names[idx]]
+            can_observe = np.linalg.norm(target_pos - self.positions[idx]) <= perception
+            if can_observe:
+                belief["pos"] = target_pos.copy()
+                belief["vel"] = target_vel.copy()
+                belief["is_exact"] = True
+                belief["age"] = 0
+            else:
+                belief["pos"] = np.clip(belief["pos"] + belief["vel"] * self.dt, -self.world_size, self.world_size)
+                belief["age"] = int(belief["age"]) + 1
+
+        self._target_belief[target_idx] = {
+            "pos": target_pos.copy(),
+            "vel": target_vel.copy(),
+            "is_exact": True,
+            "age": 0,
+        }
 
 
     def set_initial_positions(self, initial_positions=None):
@@ -207,6 +292,18 @@ class MultiUavPursuitEnv:
             self.seed(int(scenario["seed"]))
         if "target_policy_source" in scenario and scenario["target_policy_source"] is not None:
             self.target_policy_source = str(scenario["target_policy_source"])
+        if "initial_target_estimate_noise_std" in scenario and scenario["initial_target_estimate_noise_std"] is not None:
+            self.initial_target_estimate_noise_std = max(0.0, float(scenario["initial_target_estimate_noise_std"]))
+        if "initial_target_estimate_lag_steps" in scenario and scenario["initial_target_estimate_lag_steps"] is not None:
+            self.initial_target_estimate_lag_steps = max(0, int(scenario["initial_target_estimate_lag_steps"]))
+        if "pursuer_obs_noise_ratio_min" in scenario and scenario["pursuer_obs_noise_ratio_min"] is not None:
+            self.pursuer_obs_noise_ratio_min = max(0.0, float(scenario["pursuer_obs_noise_ratio_min"]))
+        if "pursuer_obs_noise_ratio_max" in scenario and scenario["pursuer_obs_noise_ratio_max"] is not None:
+            self.pursuer_obs_noise_ratio_max = max(0.0, float(scenario["pursuer_obs_noise_ratio_max"]))
+        if self.pursuer_obs_noise_ratio_min > self.pursuer_obs_noise_ratio_max:
+            self.pursuer_obs_noise_ratio_min, self.pursuer_obs_noise_ratio_max = self.pursuer_obs_noise_ratio_max, self.pursuer_obs_noise_ratio_min
+        if "max_hunters_for_obs" in scenario and scenario["max_hunters_for_obs"] is not None:
+            self.max_hunters_for_obs = max(0, int(scenario["max_hunters_for_obs"]))
         self.set_initial_positions(scenario.get("initial_positions"))
 
     def reset(self):
@@ -218,6 +315,10 @@ class MultiUavPursuitEnv:
         self._capture_counter = 0
         self._step_count = 0
         self._target_patrol_idx = 0
+        target_idx = self.agent_num - 1
+        self._target_pos_history = [self.positions[target_idx].copy()]
+        self._capture_target_measurement()
+        self._update_target_beliefs()
         return self._get_obs()
 
     def _patrol_action(self, target_pos):
@@ -252,6 +353,13 @@ class MultiUavPursuitEnv:
             self.positions[idx] += velocity * self.dt
             self.positions[idx] = np.clip(self.positions[idx], -self.world_size, self.world_size)
 
+        target_idx = self.agent_num - 1
+        self._target_pos_history.append(self.positions[target_idx].copy())
+        max_hist = self.initial_target_estimate_lag_steps + 2
+        if len(self._target_pos_history) > max_hist:
+            self._target_pos_history = self._target_pos_history[-max_hist:]
+        self._update_target_beliefs()
+
         obs = self._get_obs()
         rewards, capture = self._get_rewards()
         dones = np.array([capture or self._step_count >= self.max_steps] * self.agent_num)
@@ -264,34 +372,76 @@ class MultiUavPursuitEnv:
         target_pos = self.positions[target_idx]
         target_vel = self.velocities[target_idx]
 
-        pursuer_ids = self.role_groups["hunter"] + self.role_groups["blocker"]
-        target_spotted = False
-        for idx in pursuer_ids:
-            perception = self.perception_ranges[self.role_names[idx]]
-            if np.linalg.norm(target_pos - self.positions[idx]) <= perception:
-                target_spotted = True
-                break
-
         for idx in range(self.agent_num):
             role = self.role_names[idx]
             perception = self.perception_ranges[role]
             own_pos = self.positions[idx]
             own_vel = self.velocities[idx]
             other_features = []
+
+            visible_hunter_teammates = set()
+            if role == "hunter":
+                teammate_candidates = [
+                    jdx
+                    for jdx in self.role_groups["hunter"]
+                    if jdx != idx
+                ]
+                teammate_candidates.sort(
+                    key=lambda jdx: np.linalg.norm(self.positions[jdx] - own_pos)
+                )
+                visible_hunter_teammates = set(
+                    teammate_candidates[: self.max_hunters_for_obs]
+                )
+
             for jdx in range(self.agent_num):
                 if jdx == idx:
                     continue
-                rel_pos = self.positions[jdx] - own_pos
-                rel_vel = self.velocities[jdx] - own_vel
-                dist = np.linalg.norm(rel_pos)
-                in_range = dist <= perception
-                if jdx == target_idx and role in ("hunter", "blocker") and target_spotted:
+
+                if (
+                    role == "hunter"
+                    and self.role_names[jdx] == "hunter"
+                    and jdx not in visible_hunter_teammates
+                ):
+                    other_features.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+                    continue
+
+                if jdx == target_idx and role in ("hunter", "blocker"):
+                    belief = self._target_belief[idx]
+                    rel_pos = belief["pos"] - own_pos
+                    rel_vel = belief["vel"] - own_vel
+                    dist = np.linalg.norm(rel_pos)
                     in_range = True
+                else:
+                    rel_pos = self.positions[jdx] - own_pos
+                    rel_vel = self.velocities[jdx] - own_vel
+                    dist = np.linalg.norm(rel_pos)
+                    in_range = dist <= perception
+
+                if in_range and role in ("hunter", "blocker"):
+                    noise_ratio = self._get_pursuer_obs_noise_ratio(own_pos, target_pos)
+                    rel_pos = self._apply_relative_noise(rel_pos, noise_ratio)
+                    rel_vel = self._apply_relative_noise(rel_vel, noise_ratio)
+                    dist = float(np.linalg.norm(rel_pos))
+
                 if in_range:
                     other_features.extend([rel_pos[0], rel_pos[1], rel_vel[0], rel_vel[1], dist])
                 else:
                     other_features.extend([0.0, 0.0, 0.0, 0.0, 0.0])
-            obs_vec = np.concatenate([own_pos, own_vel, np.array(other_features, dtype=np.float32)])
+
+            if role in ("hunter", "blocker"):
+                belief = self._target_belief[idx]
+                belief_meta = np.array(
+                    [
+                        1.0,
+                        1.0 if belief["is_exact"] else 0.0,
+                        min(float(belief["age"]) / max(float(self.max_steps), 1.0), 1.0),
+                    ],
+                    dtype=np.float32,
+                )
+            else:
+                belief_meta = np.array([1.0, 1.0, 0.0], dtype=np.float32)
+
+            obs_vec = np.concatenate([own_pos, own_vel, np.array(other_features, dtype=np.float32), belief_meta])
             obs.append(obs_vec.astype(np.float32))
         return np.stack(obs, axis=0)
 
@@ -332,6 +482,8 @@ class MultiUavPursuitEnv:
                 "role_groups": self.role_groups,
                 "target_policy_source": self.target_policy_source,
                 "target_patrol_name": self.target_patrol_name,
+                "target_belief_is_exact": bool(self._target_belief.get(idx, {}).get("is_exact", True)),
+                "target_belief_age": int(self._target_belief.get(idx, {}).get("age", 0)),
             })
         return infos
 

@@ -143,6 +143,11 @@ def make_train_env(all_args):
                 target_policy_source=all_args["target_policy_source"],
                 target_patrol_path=all_args.get("target_patrol_path"),
                 target_patrol_names=all_args.get("target_patrol_names"),
+                initial_target_estimate_noise_std=all_args.get("initial_target_estimate_noise_std", 0.0),
+                initial_target_estimate_lag_steps=all_args.get("initial_target_estimate_lag_steps", 0),
+                pursuer_obs_noise_ratio_min=all_args.get("pursuer_obs_noise_ratio_min", 0.001),
+                pursuer_obs_noise_ratio_max=all_args.get("pursuer_obs_noise_ratio_max", 0.1),
+                max_hunters_for_obs=all_args.get("max_hunters_for_obs", 4),
                 **role_params,
             )
             return env
@@ -169,6 +174,11 @@ def make_eval_env(all_args):
                 target_policy_source=all_args["target_policy_source"],
                 target_patrol_path=all_args.get("target_patrol_path"),
                 target_patrol_names=all_args.get("target_patrol_names"),
+                initial_target_estimate_noise_std=all_args.get("initial_target_estimate_noise_std", 0.0),
+                initial_target_estimate_lag_steps=all_args.get("initial_target_estimate_lag_steps", 0),
+                pursuer_obs_noise_ratio_min=all_args.get("pursuer_obs_noise_ratio_min", 0.001),
+                pursuer_obs_noise_ratio_max=all_args.get("pursuer_obs_noise_ratio_max", 0.1),
+                max_hunters_for_obs=all_args.get("max_hunters_for_obs", 4),
                 **role_params,
             )
             return env
