@@ -25,6 +25,13 @@ class RMAPPO():
                  args,
                  policy,
                  device=torch.device("cpu")):
+        """Initialize MAPPO trainer and cache all optimization hyper-parameters.
+
+        Notes:
+            This class manages the full PPO-style update cycle for both actor and
+            critic. The constructor only stores knobs and selects optional value
+            normalization strategy (PopArt / ValueNorm / raw value targets).
+        """
 
         self.device = device
         self.tpdv = dict(dtype=torch.float32, device=device)
@@ -111,6 +118,8 @@ class RMAPPO():
         :return actor_grad_norm: (torch.Tensor) gradient norm from actor update.
         :return imp_weights: (torch.Tensor) importance sampling weights.
         """
+        # sample is produced by replay buffer generators. The unpacking order
+        # must stay consistent with `utils/shared_buffer.py`.
         share_obs_batch, obs_batch, rnn_states_batch, rnn_states_critic_batch, actions_batch, \
         value_preds_batch, return_batch, masks_batch, active_masks_batch, old_action_log_probs_batch, \
         adv_targ, available_actions_batch = sample
@@ -121,7 +130,8 @@ class RMAPPO():
         return_batch = check(return_batch).to(**self.tpdv)
         active_masks_batch = check(active_masks_batch).to(**self.tpdv)
 
-        # Reshape to do in a single forward pass for all steps
+        # Evaluate current policy on the sampled trajectory chunk. This gives
+        # the latest log-probabilities and value estimates for PPO ratios/losses.
         values, action_log_probs, dist_entropy = self.policy.evaluate_actions(share_obs_batch,
                                                                               obs_batch,
                                                                               rnn_states_batch,
@@ -130,7 +140,7 @@ class RMAPPO():
                                                                               masks_batch,
                                                                               available_actions_batch,
                                                                               active_masks_batch)
-        # actor update
+        # actor update: compute clipped surrogate objective.
         imp_weights = torch.exp(action_log_probs - old_action_log_probs_batch)
 
         surr1 = imp_weights * adv_targ
@@ -157,7 +167,7 @@ class RMAPPO():
 
         self.policy.actor_optimizer.step()
 
-        # critic update
+        # critic update: regress value prediction to returns with optional clipping.
         value_loss = self.cal_value_loss(values, value_preds_batch, return_batch, active_masks_batch)
 
         self.policy.critic_optimizer.zero_grad()
@@ -181,6 +191,7 @@ class RMAPPO():
 
         :return train_info: (dict) contains information regarding training update (e.g. loss, grad norms, etc).
         """
+        # Build normalized advantages before iterating over epochs/minibatches.
         if self._use_popart or self._use_valuenorm:
             advantages = buffer.returns[:-1] - self.value_normalizer.denormalize(buffer.value_preds[:-1])
         else:
@@ -201,6 +212,7 @@ class RMAPPO():
         train_info['ratio'] = 0
 
         for _ in range(self.ppo_epoch):
+            # Choose data generator according to recurrent settings.
             if self._use_recurrent_policy:
                 data_generator = buffer.recurrent_generator(advantages, self.num_mini_batch, self.data_chunk_length)
             elif self._use_naive_recurrent:
@@ -233,4 +245,3 @@ class RMAPPO():
     def prep_rollout(self):
         self.policy.actor.eval()
         self.policy.critic.eval()
-

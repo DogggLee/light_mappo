@@ -14,6 +14,7 @@ from runner.shared.base_runner import Runner
 
 
 def _t2n(x):
+    """Convert a torch tensor to a detached NumPy array on CPU."""
     return x.detach().cpu().numpy()
 
 
@@ -24,6 +25,7 @@ class EnvRunner(Runner):
         super(EnvRunner, self).__init__(config)
 
     def run(self):
+        """Main training loop: collect rollout, update policy, log/eval/checkpoint."""
         self.warmup()
 
         start = time.time()
@@ -109,6 +111,7 @@ class EnvRunner(Runner):
                 self.eval(total_num_steps)
 
     def warmup(self):
+        """Reset envs and seed replay buffer with initial observations."""
         # reset env
         obs = self.envs.reset()  # shape = [env_num, agent_num, obs_dim]
 
@@ -126,6 +129,7 @@ class EnvRunner(Runner):
 
     @torch.no_grad()
     def collect(self, step):
+        """Query policy for one timestep of actions and recurrent states."""
         self.trainer.prep_rollout()
         (
             value,
@@ -179,6 +183,7 @@ class EnvRunner(Runner):
         )
 
     def insert(self, data):
+        """Insert one environment step into replay buffer and reset finished RNN states."""
         (
             obs,
             rewards,
@@ -222,6 +227,7 @@ class EnvRunner(Runner):
 
     @torch.no_grad()
     def eval(self, total_num_steps):
+        """Run deterministic evaluation episodes and log aggregated rewards."""
         eval_episode_rewards = []
         eval_obs = self.eval_envs.reset()
 

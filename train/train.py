@@ -27,6 +27,7 @@ from envs.env_wrappers import DummyVecEnv
 
 
 def make_train_env(all_args):
+    """Build vectorized training environments according to runtime arguments."""
     def get_env_fn(rank):
         def init_env():
             # TODO 注意注意，这里选择连续还是离散可以选择注释上面两行，或者下面两行。
@@ -49,6 +50,7 @@ def make_train_env(all_args):
 
 
 def make_eval_env(all_args):
+    """Build vectorized evaluation environments with deterministic seeding."""
     def get_env_fn(rank):
         def init_env():
             # TODO 注意注意，这里选择连续还是离散可以选择注释上面两行，或者下面两行。
@@ -67,6 +69,7 @@ def make_eval_env(all_args):
 
 
 def parse_args(args, parser):
+    """Inject environment-specific CLI args on top of global MAPPO config."""
     parser.add_argument("--scenario_name", type=str, default="MyEnv", help="Which scenario to run on")
     parser.add_argument("--num_landmarks", type=int, default=3)
     parser.add_argument("--num_agents", type=int, default=2, help="number of players")
@@ -77,6 +80,7 @@ def parse_args(args, parser):
 
 
 def main(args):
+    """Entry point: parse config, initialize env/runner, and launch training."""
     parser = get_config()
     all_args = parse_args(args, parser)
 
