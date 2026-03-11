@@ -8,7 +8,7 @@ exp:
 # Environment settings (common)
 env:
   env_name: Pursuit-Ablation
-  world_size: 200
+  world_size: 300
   episode_length: 400 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true

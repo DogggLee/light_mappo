@@ -82,6 +82,8 @@ class ExplorerRuntime:
     path: List[np.ndarray] = field(default_factory=list)
     path_index: int = 0
     resume_path_index: int = 0
+    total_endurance: float = 12000.0
+    remaining_endurance: float = 12000.0
 
 
 @dataclass
@@ -105,6 +107,10 @@ class HunterRuntime:
     last_target: int = -1
     zone_explorer: int = -1
     zone_offset: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
+    state: str = "STANDBY"
+    resume_pos: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
+    total_endurance: float = 12000.0
+    remaining_endurance: float = 12000.0
 
 
 @dataclass
@@ -131,6 +137,7 @@ class TargetRuntime:
     last_seen_step: int = -1
     last_seen_pos: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
     last_seen_vel: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
+    policy_type: str = "random"
 
 
 @dataclass
@@ -154,6 +161,9 @@ class MissionConfig:
     hunters_wait_mode: str = "split"
     explorer_track_speed_scale: float = 1.2
     loss_timeout_steps: int = 40
+    explorer_total_endurance: float = 12000.0
+    hunter_total_endurance: float = 12000.0
+    endurance_idle_cost: float = 0.2
 
 
 @dataclass
@@ -447,6 +457,15 @@ class SwarmSimulationCore:
                 1,
                 int(mission_cfg.get("loss_timeout_steps", self.mission.loss_timeout_steps)),
             )
+            self.mission.explorer_total_endurance = float(
+                mission_cfg.get("explorer_total_endurance", self.mission.explorer_total_endurance)
+            )
+            self.mission.hunter_total_endurance = float(
+                mission_cfg.get("hunter_total_endurance", self.mission.hunter_total_endurance)
+            )
+            self.mission.endurance_idle_cost = float(
+                mission_cfg.get("endurance_idle_cost", self.mission.endurance_idle_cost)
+            )
 
         assign_cfg = sim_overrides.get("assignment", {})
         if isinstance(assign_cfg, dict):
@@ -496,7 +515,13 @@ class SwarmSimulationCore:
             )
             init_pos = self._sample_position()
             agent.reset(init_pos)
-            self.explorers.append(ExplorerRuntime(agent=agent))
+            self.explorers.append(
+                ExplorerRuntime(
+                    agent=agent,
+                    total_endurance=float(self.mission.explorer_total_endurance),
+                    remaining_endurance=float(self.mission.explorer_total_endurance),
+                )
+            )
 
         hunter_cfg = getattr(self.cfg, "Hunter")
         for idx in range(int(self.mission.hunters)):
@@ -514,7 +539,15 @@ class SwarmSimulationCore:
             init_pos = self._sample_position()
             agent.reset(init_pos)
             speed = float(self.rng.uniform(0.0, float(hunter_cfg.max_velo)))
-            self.hunters.append(HunterRuntime(agent=agent, standby_speed=speed))
+            self.hunters.append(
+                HunterRuntime(
+                    agent=agent,
+                    standby_speed=speed,
+                    total_endurance=float(self.mission.hunter_total_endurance),
+                    remaining_endurance=float(self.mission.hunter_total_endurance),
+                    resume_pos=np.asarray(init_pos, dtype=np.float32).copy(),
+                )
+            )
 
         target_cfg = getattr(self.cfg, "Target")
         policy_source = str(self.cfg.env.target_policy_source).lower()
@@ -565,6 +598,7 @@ class SwarmSimulationCore:
                     value=value,
                     required_hunters=required,
                     alive=True,
+                    policy_type=str(policy_source).lower(),
                 )
             )
 
@@ -738,6 +772,9 @@ class SwarmSimulationCore:
             无。
         """
         for ex in self.explorers:
+            if ex.remaining_endurance <= 0.0:
+                ex.agent.velocity[:] = 0.0
+                continue
             if ex.state == "SEARCH":
                 self._move_along_path(ex.agent, ex.path, ex)
             elif ex.state == "RETURN":
@@ -754,12 +791,26 @@ class SwarmSimulationCore:
                 speed = float(ex.agent.max_speed) * float(self.mission.explorer_track_speed_scale)
                 self._move_towards(ex.agent, target.agent.position, speed=speed)
 
+            self._consume_endurance(ex, speed=float(np.linalg.norm(ex.agent.velocity)))
+
         for h in self.hunters:
+            if h.remaining_endurance <= 0.0:
+                h.state = "EXHAUSTED"
+                h.assigned_target = -1
+                h.agent.velocity[:] = 0.0
+                continue
             if h.assigned_target < 0:
+                if h.state == "RETURN":
+                    arrived = self._move_towards(h.agent, h.resume_pos, speed=float(h.agent.max_speed))
+                    if arrived:
+                        h.state = "STANDBY"
+                    self._consume_endurance(h, speed=float(np.linalg.norm(h.agent.velocity)))
+                    continue
                 if h.standby_mode == "split":
                     self._move_hunter_split_standby(h)
                 else:
                     self._move_hunter_zone_standby(h)
+                self._consume_endurance(h, speed=float(np.linalg.norm(h.agent.velocity)))
                 continue
 
             tid = int(h.assigned_target)
@@ -772,6 +823,7 @@ class SwarmSimulationCore:
                 if target.assigned_explorer >= 0:
                     anchor = self.explorers[target.assigned_explorer].agent.position
                     self._move_towards(h.agent, anchor, speed=float(h.agent.max_speed))
+                    self._consume_endurance(h, speed=float(np.linalg.norm(h.agent.velocity)))
                 continue
 
             if tid in self.pursuit_tasks:
@@ -783,6 +835,20 @@ class SwarmSimulationCore:
                 dt=float(self.mission.dt),
                 world_size=float(self.mission.world_size),
             )
+            self._consume_endurance(h, speed=float(np.linalg.norm(h.agent.velocity)))
+
+    def _consume_endurance(self, runtime, speed: float):
+        """
+        功能:
+            按 speed * dt + c 扣减续航。
+        输入:
+            runtime (ExplorerRuntime|HunterRuntime): 智能体运行时对象。
+            speed (float): 当前速度模长。
+        输出:
+            无。
+        """
+        cost = float(max(0.0, speed) * float(self.mission.dt) + float(max(0.0, self.mission.endurance_idle_cost)))
+        runtime.remaining_endurance = float(max(0.0, float(runtime.remaining_endurance) - cost))
 
     def _step_pursuit_subtasks(self):
         """
@@ -894,9 +960,13 @@ class SwarmSimulationCore:
         """
         idle_explorer_ids = [
             idx for idx, ex in enumerate(self.explorers)
-            if ex.state == "SEARCH" and ex.assigned_target < 0
+            if ex.state == "SEARCH" and ex.assigned_target < 0 and float(ex.remaining_endurance) > 0.0
         ]
-        idle_hunter_ids = [idx for idx, h in enumerate(self.hunters) if h.assigned_target < 0]
+        idle_hunter_ids = [
+            idx
+            for idx, h in enumerate(self.hunters)
+            if h.assigned_target < 0 and h.state != "EXHAUSTED" and float(h.remaining_endurance) > 0.0
+        ]
         candidate_target_ids = [
             idx for idx, t in enumerate(self.targets)
             if t.alive and t.in_pool and t.assigned_explorer < 0
@@ -966,7 +1036,9 @@ class SwarmSimulationCore:
             for hid in use_hunters:
                 h = self.hunters[hid]
                 h.last_target = int(h.assigned_target)
+                h.resume_pos = np.asarray(h.agent.position, dtype=np.float32).copy()
                 h.assigned_target = int(tid)
+                h.state = "PURSUIT"
 
             self._create_pursuit_task_env(target_id=int(tid), hunter_ids=use_hunters)
 
@@ -1135,12 +1207,18 @@ class SwarmSimulationCore:
             if global_hid < 0 or global_hid >= len(self.hunters):
                 continue
             local_h = env.hunters[local_hid]
-            global_h = self.hunters[global_hid].agent
+            global_runtime = self.hunters[global_hid]
+            global_h = global_runtime.agent
             global_h.position = np.asarray(local_h.position, dtype=np.float32).copy()
             global_h.velocity = np.asarray(local_h.velocity, dtype=np.float32).copy()
             global_h.heading = np.asarray(local_h.heading, dtype=np.float32).copy()
             global_h.alive = bool(local_h.alive)
             global_h.trajectory.append(global_h.position.copy())
+            self._consume_endurance(global_runtime, speed=float(np.linalg.norm(global_h.velocity)))
+            if global_runtime.remaining_endurance <= 0.0:
+                global_runtime.state = "EXHAUSTED"
+                global_runtime.assigned_target = -1
+                global_h.alive = False
 
         target = self.targets[target_id]
         global_t = target.agent
@@ -1172,10 +1250,8 @@ class SwarmSimulationCore:
         """
         hunter.last_target = int(hunter.assigned_target)
         hunter.assigned_target = -1
-        if hunter.standby_mode == "split" and len(hunter.standby_path) > 0:
-            if hunter.standby_index < len(hunter.standby_path):
-                hunter.agent.position = hunter.standby_path[hunter.standby_index].copy()
-            hunter.agent.velocity[:] = 0.0
+        hunter.state = "RETURN"
+        hunter.agent.velocity[:] = 0.0
 
     def _move_along_path(self, agent: ExplorerAgent, path: List[np.ndarray], runtime: ExplorerRuntime):
         """
@@ -1333,13 +1409,21 @@ class SwarmSimulationCore:
                 full_route.append(np.array([x_min, yy], dtype=np.float32))
             left_to_right = not left_to_right
 
-        paths: List[List[np.ndarray]] = [[] for _ in range(num_explorers)]
-        for idx, wp in enumerate(full_route):
-            eid = int(idx % num_explorers)
-            paths[eid].append(wp.copy())
+        # 先规划单Explorer全局覆盖航线，再按Explorer数量做连续等分。
+        paths: List[List[np.ndarray]] = []
+        total_wp = len(full_route)
         for eid in range(num_explorers):
-            if len(paths[eid]) == 0:
-                paths[eid] = [self._sample_position()]
+            start = int(round(eid * total_wp / max(1, num_explorers)))
+            end = int(round((eid + 1) * total_wp / max(1, num_explorers)))
+            chunk = [wp.copy() for wp in full_route[start:end]]
+            if len(chunk) == 0:
+                chunk = [self._sample_position()]
+
+            # 为避免段尾回环产生斜线，构建往返序列。
+            if len(chunk) >= 2:
+                bounce = [wp.copy() for wp in chunk[-2:0:-1]]
+                chunk = chunk + bounce
+            paths.append(chunk)
         return paths
 
     def _build_hunter_split_paths(self, world_size: float, num_hunters: int) -> List[List[np.ndarray]]:
@@ -1643,6 +1727,9 @@ class SwarmSimGUI:
         self._add_input(mission_tab, "wait_mode(split/zone)", str(self.sim.mission.hunters_wait_mode))
         self._add_input(mission_tab, "track_speed_scale", str(self.sim.mission.explorer_track_speed_scale))
         self._add_input(mission_tab, "loss_timeout", str(self.sim.mission.loss_timeout_steps))
+        self._add_input(mission_tab, "explorer_endurance", str(self.sim.mission.explorer_total_endurance))
+        self._add_input(mission_tab, "hunter_endurance", str(self.sim.mission.hunter_total_endurance))
+        self._add_input(mission_tab, "idle_endurance_cost", str(self.sim.mission.endurance_idle_cost))
 
         self._add_input(assign_tab, "w_distance", str(self.sim.weights.distance_weight))
         self._add_input(assign_tab, "w_value", str(self.sim.weights.value_weight))
@@ -1688,8 +1775,15 @@ class SwarmSimGUI:
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(left, textvariable=self.status_var, wraplength=320).pack(fill=tk.X, pady=(10, 0))
 
+        ttk.Label(left, text="任务池 / 资源池", anchor="w").pack(fill=tk.X, pady=(8, 2))
+        self.pool_text = tk.Text(left, width=48, height=20)
+        self.pool_text.pack(fill=tk.BOTH, expand=False)
+        self.pool_text.configure(state=tk.DISABLED)
+
         self.figure = Figure(figsize=(8, 8), dpi=100)
-        self.ax = self.figure.add_subplot(111)
+        grid = self.figure.add_gridspec(1, 2, width_ratios=[3.4, 1.4])
+        self.ax = self.figure.add_subplot(grid[0, 0])
+        self.ax_pool = self.figure.add_subplot(grid[0, 1])
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self._draw_scene()
@@ -1732,6 +1826,9 @@ class SwarmSimGUI:
             hunters_wait_mode=str(self.inputs["wait_mode(split/zone)"].get()).strip().lower(),
             explorer_track_speed_scale=float(self.inputs["track_speed_scale"].get()),
             loss_timeout_steps=max(1, int(float(self.inputs["loss_timeout"].get()))),
+            explorer_total_endurance=float(self.inputs["explorer_endurance"].get()),
+            hunter_total_endurance=float(self.inputs["hunter_endurance"].get()),
+            endurance_idle_cost=float(self.inputs["idle_endurance_cost"].get()),
         )
         if mission.hunters_wait_mode not in ("split", "zone"):
             mission.hunters_wait_mode = "split"
@@ -1949,6 +2046,17 @@ class SwarmSimGUI:
             if not t.alive:
                 continue
             p = t.agent.position
+            policy_name = str(t.policy_type).lower()
+            if policy_name == "patrol" and len(getattr(t.agent, "patrol_waypoints", [])) > 1:
+                patrol_np = np.asarray(t.agent.patrol_waypoints, dtype=np.float32)
+                self.ax.plot(
+                    patrol_np[:, 0],
+                    patrol_np[:, 1],
+                    color="tab:purple",
+                    linestyle="--",
+                    linewidth=1.0,
+                    alpha=0.25,
+                )
             if show_target_capture:
                 cap_circle = plt.Circle(
                     (float(p[0]), float(p[1])),
@@ -1961,13 +2069,15 @@ class SwarmSimGUI:
                 self.ax.add_patch(cap_circle)
             color = "tab:purple" if t.in_pool else "black"
             self.ax.scatter([p[0]], [p[1]], c=color, s=40, marker="x")
-            self.ax.text(float(p[0]) + 1.0, float(p[1]) + 1.0, f"T{tid}", fontsize=8)
+            self.ax.text(float(p[0]) + 1.0, float(p[1]) + 1.0, f"T{tid}:{policy_name}", fontsize=8)
 
         legend_handles = [
             Line2D([0], [0], marker="o", color="w", markerfacecolor="tab:blue", markeredgecolor="tab:blue", markersize=7, label="Hunter(待命)"),
             Line2D([0], [0], marker="o", color="w", markerfacecolor="tab:red", markeredgecolor="tab:red", markersize=7, label="Hunter(追捕)"),
             Line2D([0], [0], marker="^", color="w", markerfacecolor="tab:green", markeredgecolor="tab:green", markersize=7, label="Explorer"),
             Line2D([0], [0], marker="x", color="black", markersize=8, label="Target"),
+            Patch(facecolor="tab:green", alpha=0.12, label="Explorer感知范围"),
+            Patch(facecolor="tab:red", alpha=0.12, label="Target捕获范围"),
         ]
         if show_explorer_perception:
             legend_handles.append(Patch(facecolor="tab:green", alpha=0.12, label="Explorer感知范围"))
@@ -1983,7 +2093,182 @@ class SwarmSimGUI:
             f"freeH={int(summary['free_hunters'])}, freeE={int(summary['free_explorers'])}"
         )
         self.ax.set_title(status_text)
+        self._draw_pool_panel()
         self.canvas.draw_idle()
+        self._update_pool_text()
+
+    def _draw_pool_panel(self):
+        """
+        功能:
+            绘制右侧任务池/资源池图形面板（目标状态+无人机续航/任务状态）。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if not hasattr(self, "ax_pool"):
+            return
+
+        ax = self.ax_pool
+        ax.clear()
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.axis("off")
+
+        # Step 1: 目标池状态统计条形图
+        total_targets = max(1, len(self.sim.targets))
+        captured = sum(1 for t in self.sim.targets if not t.alive)
+        pursuing = sum(1 for t in self.sim.targets if t.alive and t.pursuit_started)
+        discovered = sum(1 for t in self.sim.targets if t.alive and t.in_pool and not t.pursuit_started)
+        undiscovered = max(0, total_targets - captured - pursuing - discovered)
+
+        ax.text(0.02, 0.98, "任务池", va="top", fontsize=9, fontweight="bold")
+        target_stats = [
+            ("Undisc", undiscovered, "#9e9e9e"),
+            ("Discov", discovered, "#9467bd"),
+            ("Pursue", pursuing, "#ff7f0e"),
+            ("Capt", captured, "#2ca02c"),
+        ]
+        y0 = 0.92
+        for idx, (name, value, color) in enumerate(target_stats):
+            y = y0 - idx * 0.055
+            ratio = float(value) / float(max(1, total_targets))
+            ax.add_patch(plt.Rectangle((0.02, y - 0.02), 0.62 * ratio, 0.028, color=color, alpha=0.75))
+            ax.add_patch(plt.Rectangle((0.02, y - 0.02), 0.62, 0.028, fill=False, edgecolor="#cccccc", linewidth=0.6))
+            ax.text(0.67, y - 0.006, f"{name}:{int(value)}", fontsize=7, va="center")
+
+        # Step 2: 无人机资源池续航与任务状态
+        ax.text(0.02, 0.67, "资源池", va="top", fontsize=9, fontweight="bold")
+        drone_rows = []
+        for idx, ex in enumerate(self.sim.explorers):
+            if not ex.agent.alive and ex.remaining_endurance <= 0.0:
+                state = "EXH"
+            else:
+                state = str(ex.state)[:4].upper()
+            drone_rows.append(
+                (
+                    f"E{int(idx)}",
+                    float(ex.remaining_endurance),
+                    float(max(1e-6, ex.total_endurance)),
+                    state,
+                    "#2ca02c",
+                )
+            )
+        for idx, h in enumerate(self.sim.hunters):
+            state = str(h.state)[:4].upper()
+            drone_rows.append(
+                (
+                    f"H{int(idx)}",
+                    float(h.remaining_endurance),
+                    float(max(1e-6, h.total_endurance)),
+                    state,
+                    "#1f77b4" if h.assigned_target < 0 else "#d62728",
+                )
+            )
+
+        max_rows = 12
+        shown_rows = drone_rows[:max_rows]
+        base_y = 0.63
+        row_h = 0.045
+        for ridx, (name, remain, total, state, color) in enumerate(shown_rows):
+            y = base_y - ridx * row_h
+            if y < 0.05:
+                break
+            ratio = float(np.clip(remain / max(1e-6, total), 0.0, 1.0))
+            ax.text(0.02, y, name, fontsize=7, va="center", color=color)
+            ax.add_patch(plt.Rectangle((0.15, y - 0.012), 0.42, 0.022, fill=False, edgecolor="#cccccc", linewidth=0.5))
+            ax.add_patch(plt.Rectangle((0.15, y - 0.012), 0.42 * ratio, 0.022, color=color, alpha=0.72))
+            ax.text(0.59, y, state, fontsize=6.5, va="center")
+
+        if len(drone_rows) > max_rows:
+            ax.text(0.02, 0.02, f"+{len(drone_rows)-max_rows} more", fontsize=7, color="#666666")
+
+    def _format_endurance_bar(self, remain: float, total: float, width: int = 10) -> str:
+        """
+        功能:
+            生成续航文本进度条。
+        输入:
+            remain (float): 剩余续航。
+            total (float): 总续航。
+            width (int): 进度条宽度。
+        输出:
+            str: 文本进度条。
+        """
+        total_safe = float(max(1e-6, total))
+        ratio = float(np.clip(remain / total_safe, 0.0, 1.0))
+        filled = int(round(ratio * int(max(1, width))))
+        return "[" + "#" * filled + "-" * (int(max(1, width)) - filled) + "]"
+
+    def _update_pool_text(self):
+        """
+        功能:
+            更新任务目标池与无人机资源池文本面板。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if not hasattr(self, "pool_text"):
+            return
+
+        lines: List[str] = []
+        lines.append("[任务目标池]")
+        for tid, target in enumerate(self.sim.targets):
+            if not target.alive:
+                status = "CAPTURED"
+            elif target.pursuit_started:
+                status = "PURSUIT"
+            elif target.in_pool:
+                status = "DISCOVERED"
+            else:
+                status = "UNDISCOVERED"
+            lines.append(
+                "T{} | {} | policy={} | req_h={} | ex={} | hs={}".format(
+                    int(tid),
+                    status,
+                    str(target.policy_type).lower(),
+                    int(target.required_hunters),
+                    int(target.assigned_explorer),
+                    [int(x) for x in list(target.assigned_hunters)],
+                )
+            )
+
+        lines.append("")
+        lines.append("[无人机资源池 - Explorer]")
+        for eid, ex in enumerate(self.sim.explorers):
+            bar = self._format_endurance_bar(ex.remaining_endurance, ex.total_endurance)
+            lines.append(
+                "E{} | state={} | task={} | end={:.1f}/{:.1f} {}".format(
+                    int(eid),
+                    str(ex.state),
+                    int(ex.assigned_target),
+                    float(ex.remaining_endurance),
+                    float(ex.total_endurance),
+                    bar,
+                )
+            )
+
+        lines.append("")
+        lines.append("[无人机资源池 - Hunter]")
+        for hid, hunter in enumerate(self.sim.hunters):
+            bar = self._format_endurance_bar(hunter.remaining_endurance, hunter.total_endurance)
+            lines.append(
+                "H{} | state={} | mode={} | task={} | end={:.1f}/{:.1f} {}".format(
+                    int(hid),
+                    str(hunter.state),
+                    str(hunter.standby_mode),
+                    int(hunter.assigned_target),
+                    float(hunter.remaining_endurance),
+                    float(hunter.total_endurance),
+                    bar,
+                )
+            )
+
+        text_val = "\n".join(lines)
+        self.pool_text.configure(state=tk.NORMAL)
+        self.pool_text.delete("1.0", tk.END)
+        self.pool_text.insert("1.0", text_val)
+        self.pool_text.configure(state=tk.DISABLED)
 
     def run(self):
         """
