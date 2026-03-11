@@ -186,6 +186,8 @@ eval:
   scenario_suite_val: datasets/val
   scenario_suite_test: datasets/test
   eval_episode_length: 600
+  eval_batch_size: 50         # <=0 表示不分批；>0 时每批最多评估多少个环境
+  eval_batch_by_hunter_count: true   # 分批时先按num_hunters分组，再做batch切片
   fixed_tasks: []
   fixed_tasks_file: null
 

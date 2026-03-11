@@ -1,0 +1,119 @@
+exp:
+  algorithm_name: rmappo
+  experiment_name: Evalb50_sBuf_patrolPolicy_v3v1_esc20_deltaBase5_Zone
+  seed: 1
+  num_env_steps: 2000000 # total environment steps to train
+  role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
+
+# Environment settings (common)
+env:
+  env_name: Pursuit-Ablation
+  world_size: 200
+  episode_length: 400 # max steps per episode
+  max_hunters_num: 3
+  hunters_in_zone: true
+
+  neighbor_N: 3
+  coord_summary_obs_enable: false
+  coord_topk_hunters: 4
+
+  target_policy_source: patrol # Choices: ["learn", "patrol", "random", "greedy", "escape"]
+  target_switch_interval: 10
+
+Hunter:
+  perception_radius: -1
+  control_mode: velocity  # Choices: ["acceleration", "velocity"]
+
+Explorer:
+  perception_radius: 50
+  control_mode: velocity  # Choices: ["acceleration", "velocity"]
+
+
+Target: 
+  perception_radius: -1
+  control_mode: velocity
+
+# UAV pursuit scenario settings
+reward:
+  # Collision Penalty
+  target_collision_penalty: 30.0
+  collision_penalty_k: 10.0
+  collision_penalty_cap: 50.0
+  safe_zone_penalty_scale: 1.0
+  
+  # Base chase reward
+  base_reward_mode: delta_window  # Choices: ["legacy", "delta_window"]
+  
+  base_far_scale: 0.2
+  base_near_scale: 1.0
+  base_streak_scale: 0.5
+  base_streak_cap: 30
+  base_reward_topk_enable: false
+  base_reward_topk_k: 4
+  base_reward_non_topk_scale: 0.1
+
+  base_delta_window: 5
+  base_delta_hunter_scale: 1.0
+  base_delta_target_scale: 1.0
+  base_delta_norm_scale: 20.0
+
+  # Escape Gap
+  escape_gap_enable: true
+  escape_gap_hunter_reward_scale: 20.0
+  escape_gap_target_reward_scale: 5.0
+  # 新版拆分项：包围质量reward（基于encircle_score / gap_open_score）
+  escape_gap_encircle_hunter_reward_scale: 20.0
+  escape_gap_encircle_target_reward_scale: 5.0
+  # 新版拆分项：拦截reward（基于direction_score，速度低于阈值不计算）
+  escape_gap_intercept_hunter_reward_scale: 3.0
+  escape_gap_intercept_target_reward_scale: 6.0
+  escape_radius: 35.0
+
+  # Capture reward
+  hunter_capture_reward: 15.0
+  target_captured_penalty: 12.0
+  capture_reward_allocation: encircle  # Choices: ["team", "alone", "encircle"]
+
+  # Speed Penalty
+  speed_penalty: 0.02
+
+# Model/network settings
+model:
+  policy_share: true # whether all agents share the same policy
+  hidden_size: 64
+  layer_N: 1
+  use_recurrent_policy: true
+
+
+# Optimizer settings
+optim:
+  lr: 0.0005
+  critic_lr: 0.0005
+  opti_eps: 0.00001
+  weight_decay: 0
+
+# Learning rate schedule
+schedule:
+  use_linear_lr_decay: true
+
+logging:
+  log_gif: false         # 训练阶段是否按规则保存GIF
+
+eval:
+  eval_episode_length: 600
+  fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
+
+domain_randomization:
+  train_split:
+    enable: false
+    regen_interval_episode: 20
+    regen_prob: 1.0
+    hunter_count_choices: [1, 2, 3]
+    seed_range: [1, 99999]
+    hunters_in_zone_choices: [false,true]
+    target_policy_choices: ["patrol", "random", "escape"]
+    patrol_name_choices: ["all"]
+
+# Pretrained model
+pretrained:
+  model_dir: null

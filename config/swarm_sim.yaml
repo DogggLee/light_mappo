@@ -1,0 +1,19 @@
+swarm_sim:
+  mission:
+    world_size: 100
+    dt: 0.1
+    max_steps: 3000
+    hunters: 6
+    explorers: 3
+    targets: 5
+    overlap_rate: 0.2
+    hunters_wait_mode: split  # Choices: [split, zone]
+    explorer_track_speed_scale: 1.2
+    loss_timeout_steps: 40
+
+  assignment:
+    distance_weight: 1.0
+    value_weight: 2.0
+    endurance_weight: 1.0
+    switch_weight: 0.5
+    max_assign_dist: 250.0

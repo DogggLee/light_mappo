@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import yaml
+import matplotlib.pyplot as plt
 
 project_root = Path(__file__).resolve().parents[1]
 project_root_str = str(project_root)
@@ -367,7 +369,13 @@ class SwarmSimulationCore:
         无。
     """
 
-    def __init__(self, cfg, seed: Optional[int] = None, target_actor_path: Optional[str] = None):
+    def __init__(
+        self,
+        cfg,
+        seed: Optional[int] = None,
+        target_actor_path: Optional[str] = None,
+        sim_overrides: Optional[dict] = None,
+    ):
         self.cfg = cfg
         self.rng = np.random.RandomState(int(cfg.exp.seed if seed is None else seed))
 
@@ -389,6 +397,7 @@ class SwarmSimulationCore:
         )
 
         self.weights = AssignmentWeights()
+        self._apply_sim_overrides(sim_overrides)
         self.time_step = 0
         self.executing = False
         self.planned = False
@@ -404,6 +413,54 @@ class SwarmSimulationCore:
         )
         self.target_actor = LearnTargetActor(cfg, target_actor_path, obs_dim=20)
         self.reset_world()
+
+    def _apply_sim_overrides(self, sim_overrides: Optional[dict]):
+        """
+        功能:
+            将独立仿真配置覆盖到任务参数与分配权重。
+        输入:
+            sim_overrides (Optional[dict]): 独立仿真配置字典。
+        输出:
+            无。
+        """
+        if not isinstance(sim_overrides, dict):
+            return
+
+        mission_cfg = sim_overrides.get("mission", {})
+        if isinstance(mission_cfg, dict):
+            self.mission.world_size = float(mission_cfg.get("world_size", self.mission.world_size))
+            self.mission.dt = float(mission_cfg.get("dt", self.mission.dt))
+            self.mission.max_steps = int(mission_cfg.get("max_steps", self.mission.max_steps))
+            self.mission.hunters = max(1, int(mission_cfg.get("hunters", self.mission.hunters)))
+            self.mission.explorers = max(1, int(mission_cfg.get("explorers", self.mission.explorers)))
+            self.mission.targets = max(1, int(mission_cfg.get("targets", self.mission.targets)))
+            self.mission.overlap_rate = float(mission_cfg.get("overlap_rate", self.mission.overlap_rate))
+            self.mission.hunters_wait_mode = str(
+                mission_cfg.get("hunters_wait_mode", self.mission.hunters_wait_mode)
+            ).lower()
+            if self.mission.hunters_wait_mode not in ("split", "zone"):
+                self.mission.hunters_wait_mode = "split"
+            self.mission.explorer_track_speed_scale = float(
+                mission_cfg.get("explorer_track_speed_scale", self.mission.explorer_track_speed_scale)
+            )
+            self.mission.loss_timeout_steps = max(
+                1,
+                int(mission_cfg.get("loss_timeout_steps", self.mission.loss_timeout_steps)),
+            )
+
+        assign_cfg = sim_overrides.get("assignment", {})
+        if isinstance(assign_cfg, dict):
+            self.weights.distance_weight = float(
+                assign_cfg.get("distance_weight", self.weights.distance_weight)
+            )
+            self.weights.value_weight = float(assign_cfg.get("value_weight", self.weights.value_weight))
+            self.weights.endurance_weight = float(
+                assign_cfg.get("endurance_weight", self.weights.endurance_weight)
+            )
+            self.weights.switch_weight = float(assign_cfg.get("switch_weight", self.weights.switch_weight))
+            self.weights.max_assign_dist = float(
+                assign_cfg.get("max_assign_dist", self.weights.max_assign_dist)
+            )
 
     def reset_world(self):
         """
@@ -1300,11 +1357,18 @@ class SwarmSimulationCore:
         y1 = -world_size + margin
         y2 = world_size - margin
         out = []
-        for xx in xs:
-            out.append([
-                np.array([xx, y1], dtype=np.float32),
-                np.array([xx, y2], dtype=np.float32),
-            ])
+        for hid, xx in enumerate(xs):
+            # 相邻航线起点交错：偶数从底部出发，奇数从顶部出发。
+            if int(hid) % 2 == 0:
+                out.append([
+                    np.array([xx, y1], dtype=np.float32),
+                    np.array([xx, y2], dtype=np.float32),
+                ])
+            else:
+                out.append([
+                    np.array([xx, y2], dtype=np.float32),
+                    np.array([xx, y1], dtype=np.float32),
+                ])
         return out
 
     def _assign_zone_groups(self):
@@ -1562,22 +1626,29 @@ class SwarmSimGUI:
 
         self.inputs: Dict[str, tk.StringVar] = {}
 
-        self._add_input(left, "world_size", str(self.sim.mission.world_size))
-        self._add_input(left, "hunters", str(self.sim.mission.hunters))
-        self._add_input(left, "explorers", str(self.sim.mission.explorers))
-        self._add_input(left, "targets", str(self.sim.mission.targets))
-        self._add_input(left, "max_steps", str(self.sim.mission.max_steps))
-        self._add_input(left, "dt", str(self.sim.mission.dt))
-        self._add_input(left, "overlap_rate", str(self.sim.mission.overlap_rate))
-        self._add_input(left, "wait_mode(split/zone)", str(self.sim.mission.hunters_wait_mode))
-        self._add_input(left, "track_speed_scale", str(self.sim.mission.explorer_track_speed_scale))
-        self._add_input(left, "loss_timeout", str(self.sim.mission.loss_timeout_steps))
+        notebook = ttk.Notebook(left)
+        notebook.pack(fill=tk.X, pady=(0, 6))
+        mission_tab = ttk.Frame(notebook, padding=4)
+        assign_tab = ttk.Frame(notebook, padding=4)
+        notebook.add(mission_tab, text="环境/任务")
+        notebook.add(assign_tab, text="任务分配")
 
-        self._add_input(left, "w_distance", str(self.sim.weights.distance_weight))
-        self._add_input(left, "w_value", str(self.sim.weights.value_weight))
-        self._add_input(left, "w_endurance", str(self.sim.weights.endurance_weight))
-        self._add_input(left, "w_switch", str(self.sim.weights.switch_weight))
-        self._add_input(left, "max_assign_dist", str(self.sim.weights.max_assign_dist))
+        self._add_input(mission_tab, "world_size", str(self.sim.mission.world_size))
+        self._add_input(mission_tab, "hunters", str(self.sim.mission.hunters))
+        self._add_input(mission_tab, "explorers", str(self.sim.mission.explorers))
+        self._add_input(mission_tab, "targets", str(self.sim.mission.targets))
+        self._add_input(mission_tab, "max_steps", str(self.sim.mission.max_steps))
+        self._add_input(mission_tab, "dt", str(self.sim.mission.dt))
+        self._add_input(mission_tab, "overlap_rate", str(self.sim.mission.overlap_rate))
+        self._add_input(mission_tab, "wait_mode(split/zone)", str(self.sim.mission.hunters_wait_mode))
+        self._add_input(mission_tab, "track_speed_scale", str(self.sim.mission.explorer_track_speed_scale))
+        self._add_input(mission_tab, "loss_timeout", str(self.sim.mission.loss_timeout_steps))
+
+        self._add_input(assign_tab, "w_distance", str(self.sim.weights.distance_weight))
+        self._add_input(assign_tab, "w_value", str(self.sim.weights.value_weight))
+        self._add_input(assign_tab, "w_endurance", str(self.sim.weights.endurance_weight))
+        self._add_input(assign_tab, "w_switch", str(self.sim.weights.switch_weight))
+        self._add_input(assign_tab, "max_assign_dist", str(self.sim.weights.max_assign_dist))
 
         row_buttons = ttk.Frame(left)
         row_buttons.pack(fill=tk.X, pady=(8, 4))
@@ -1596,6 +1667,23 @@ class SwarmSimGUI:
         row_buttons3.pack(fill=tk.X, pady=(4, 4))
         ttk.Button(row_buttons3, text="保存倾向", command=self._on_save_profile).pack(side=tk.LEFT, padx=2)
         ttk.Button(row_buttons3, text="加载倾向", command=self._on_load_profile).pack(side=tk.LEFT, padx=2)
+
+        row_vis = ttk.Frame(left)
+        row_vis.pack(fill=tk.X, pady=(4, 4))
+        self.show_explorer_perception_var = tk.BooleanVar(value=True)
+        self.show_target_capture_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            row_vis,
+            text="显示Explorer感知圈",
+            variable=self.show_explorer_perception_var,
+            command=self._draw_scene,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(
+            row_vis,
+            text="显示Target捕获圈",
+            variable=self.show_target_capture_var,
+            command=self._draw_scene,
+        ).pack(side=tk.LEFT, padx=2)
 
         self.status_var = tk.StringVar(value="Ready")
         ttk.Label(left, textvariable=self.status_var, wraplength=320).pack(fill=tk.X, pady=(10, 0))
@@ -1818,8 +1906,15 @@ class SwarmSimGUI:
         输出:
             无。
         """
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import Patch
+
         self.ax.clear()
         ws = float(self.sim.mission.world_size)
+        target_capture_dis = float(self.sim.cfg.env.capture_dis)
+        explorer_perception_radius = float(getattr(self.sim.cfg.Explorer, "perception_radius", -1))
+        show_explorer_perception = bool(getattr(self, "show_explorer_perception_var", None).get())
+        show_target_capture = bool(getattr(self, "show_target_capture_var", None).get())
         self.ax.set_xlim(-ws, ws)
         self.ax.set_ylim(-ws, ws)
         self.ax.set_aspect("equal", adjustable="box")
@@ -1828,6 +1923,15 @@ class SwarmSimGUI:
         for ex in self.sim.explorers:
             p = ex.agent.position
             color = "tab:green" if ex.state == "SEARCH" else ("tab:orange" if ex.state == "TRACK" else "tab:gray")
+            if show_explorer_perception and explorer_perception_radius > 0:
+                ex_circle = plt.Circle(
+                    (float(p[0]), float(p[1])),
+                    explorer_perception_radius,
+                    facecolor="tab:green",
+                    edgecolor="none",
+                    alpha=0.08,
+                )
+                self.ax.add_patch(ex_circle)
             self.ax.scatter([p[0]], [p[1]], c=color, s=45, marker="^")
             if len(ex.path) > 1:
                 path_np = np.asarray(ex.path)
@@ -1845,9 +1949,31 @@ class SwarmSimGUI:
             if not t.alive:
                 continue
             p = t.agent.position
+            if show_target_capture:
+                cap_circle = plt.Circle(
+                    (float(p[0]), float(p[1])),
+                    target_capture_dis,
+                    facecolor="tab:red",
+                    edgecolor="tab:red",
+                    alpha=0.10,
+                    linewidth=1.0,
+                )
+                self.ax.add_patch(cap_circle)
             color = "tab:purple" if t.in_pool else "black"
             self.ax.scatter([p[0]], [p[1]], c=color, s=40, marker="x")
             self.ax.text(float(p[0]) + 1.0, float(p[1]) + 1.0, f"T{tid}", fontsize=8)
+
+        legend_handles = [
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="tab:blue", markeredgecolor="tab:blue", markersize=7, label="Hunter(待命)"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor="tab:red", markeredgecolor="tab:red", markersize=7, label="Hunter(追捕)"),
+            Line2D([0], [0], marker="^", color="w", markerfacecolor="tab:green", markeredgecolor="tab:green", markersize=7, label="Explorer"),
+            Line2D([0], [0], marker="x", color="black", markersize=8, label="Target"),
+        ]
+        if show_explorer_perception:
+            legend_handles.append(Patch(facecolor="tab:green", alpha=0.12, label="Explorer感知范围"))
+        if show_target_capture:
+            legend_handles.append(Patch(facecolor="tab:red", alpha=0.12, label="Target捕获范围"))
+        self.ax.legend(handles=legend_handles, loc="upper right", fontsize=8, framealpha=0.9)
 
         summary = self.sim.get_summary()
         status_text = (
@@ -1882,9 +2008,44 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(description="Swarm simulation GUI entry")
     parser.add_argument("--config_file", type=str, required=True, help="Path to yaml config file")
+    parser.add_argument(
+        "--sim_config_file",
+        type=str,
+        default=None,
+        help="Path to standalone swarm sim yaml file",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--target_actor", type=str, default=None, help="Optional actor for target learn policy")
     return parser
+
+
+def load_sim_overrides(sim_config_file: Optional[str]) -> dict:
+    """
+    功能:
+        读取独立仿真配置文件，并返回swarm_sim配置段。
+    输入:
+        sim_config_file (Optional[str]): 独立仿真配置路径。
+    输出:
+        dict: 仿真配置覆盖字典。
+    """
+    if sim_config_file is None:
+        return {}
+    cfg_path = Path(str(sim_config_file))
+    if not cfg_path.is_absolute():
+        cfg_path = project_root / cfg_path
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"sim_config_file not found: {cfg_path}")
+
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError("sim_config_file root must be a dict")
+    if "swarm_sim" in data:
+        payload = data.get("swarm_sim", {})
+        if not isinstance(payload, dict):
+            raise ValueError("sim_config_file key swarm_sim must be a dict")
+        return dict(payload)
+    return dict(data)
 
 
 def main():
@@ -1899,8 +2060,14 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     cfg = load_config(args.config_file)
+    sim_overrides = load_sim_overrides(args.sim_config_file)
 
-    sim = SwarmSimulationCore(cfg=cfg, seed=args.seed, target_actor_path=args.target_actor)
+    sim = SwarmSimulationCore(
+        cfg=cfg,
+        seed=args.seed,
+        target_actor_path=args.target_actor,
+        sim_overrides=sim_overrides,
+    )
     app = SwarmSimGUI(sim)
     app.run()
 

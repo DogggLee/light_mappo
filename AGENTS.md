@@ -36,6 +36,13 @@ CUDA 训练前（按需）：
 离线评估：
 `python train/eval.py --config_file <config_file_path>`
 
+搜索+追捕全流程仿真（GUI）：
+`python train/swarm_sim.py --config_file <train_config_file_path> [--sim_config_file <swarm_sim_config_file_path>] [--target_actor <target_actor_path>] [--seed <seed>]`
+
+说明：
+- `--config_file` 仍使用训练/评估同源配置（如 `config/acc_seen_escape.yaml`），保证目标策略与动力学参数一致。
+- `--sim_config_file` 用于独立管理仿真任务参数与任务分配权重（可参考 `config/swarm_sim.yaml`）。
+
 生成固定评估任务（基础环境 × hunter数量，用于横向对比）：
 `python scripts/gen_fixed_eval_task.py --output <eval_tasks_yaml_or_json> --num_base_envs <N> --hunter_count_choices <h1,h2,...> --world_size <min_ws> <max_ws> --target_policy_choices <random,patrol> --target_patrol_paths <path1,path2,...> --hunters_in_zone_choices <false,true> --seed_start <seed0> --seed_step <step> --rand_seed <rand_seed>`
 
