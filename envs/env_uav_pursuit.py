@@ -1155,49 +1155,42 @@ class TargetAgent(BaseAgent):
         ideal_gap = float((full_circle - float(n_encircle) * angle_blk) / max(1, n_encircle))
         ideal_gap = float(np.clip(ideal_gap, 0.0, full_circle))
 
-        # 最坏情况下，所有无人机只在
+        # 最坏情况下，所有无人机只在同一侧位置进行包围
         worst_gap = float(full_circle - angle_blk)
         worst_gap = float(np.clip(worst_gap, 0.0, full_circle))
-        if worst_gap <= ideal_gap + 1e-8:
+
+        # 当前逃脱角度，在 [ideal, worst] 区间中的位置映射到[0, 1]
+        if worst_gap <= ideal_gap + 1e-8:  # 理论上,worst_gap 应该 > ideal_gap
             gap_open_ratio = float(np.clip(max_gap_angle / full_circle, 0.0, 1.0))
         else:
             gap_open_ratio = float(
                 np.clip((max_gap_angle - ideal_gap) / max(1e-8, worst_gap - ideal_gap), 0.0, 1.0)
             )
+        
+        # gap_open_ratio越接近0，逃脱角度接近ideal角度, 包围质量越高
         encircle_score = float(1.0 - gap_open_ratio)
         gap_open_score = float(gap_open_ratio)
 
         worst_thr = float(self.escape_gap_quality_worst_penalty_threshold)
-        if gap_open_ratio <= worst_thr:
-            worst_penalty = 0.0
-        else:
-            worst_penalty = float(
-                np.clip((gap_open_ratio - worst_thr) / max(1e-8, 1.0 - worst_thr), 0.0, 1.0)
-            )
-        hunter_quality_score = float(
-            np.clip(
-                encircle_score - float(self.escape_gap_quality_worst_penalty_scale) * worst_penalty,
-                -1.0,
-                1.0,
-            )
-        )
-        target_quality_score = float(
-            np.clip(
-                gap_open_score + float(self.escape_gap_quality_worst_penalty_scale) * worst_penalty,
-                0.0,
-                1.0,
-            )
-        )
 
-        # Step 1: 包围质量奖励（仅依赖encircle_score / gap_open_score）。
-        hunter_encircle_reward_value = (
-            float(self.escape_gap_encircle_hunter_reward_scale)
-            * float(hunter_quality_score)
-        )
-        target_encircle_reward_value = (
-            float(self.escape_gap_encircle_target_reward_scale)
-            * float(target_quality_score)
-        )
+        # Step 1: 包围质量奖励
+        if gap_open_ratio <= worst_thr:
+            # 高质量包围，给予hunter奖励
+            hunter_quality_score = (worst_thr - gap_open_ratio) / worst_thr
+            hunter_encircle_reward_value = (
+                float(self.escape_gap_encircle_hunter_reward_scale)
+                * float(hunter_quality_score)
+                )
+        else:
+            # 同侧拥挤包围，给予惩罚
+            hunter_quality_score = (worst_thr - gap_open_ratio) / (1 - worst_thr)
+            hunter_encircle_reward_value = (
+                float(self.escape_gap_quality_worst_penalty_scale)
+                * float(hunter_quality_score)
+                )
+
+        target_quality_score = - hunter_quality_score
+        target_encircle_reward_value = - hunter_encircle_reward_value
 
         # Step 2: 拦截奖励（仅依赖direction_score；Target速度过小时跳过）。
         speed = float(np.linalg.norm(np.asarray(self.velocity, dtype=np.float32)))
@@ -1229,7 +1222,6 @@ class TargetAgent(BaseAgent):
         gap_info["worst_escape_gap_angle"] = float(worst_gap)
         gap_info["angle_blk"] = float(angle_blk)
         gap_info["gap_open_ratio"] = float(gap_open_ratio)
-        gap_info["worst_penalty"] = float(worst_penalty)
         gap_info["hunter_quality_score"] = float(hunter_quality_score)
         gap_info["target_quality_score"] = float(target_quality_score)
         gap_info["hunter_direction_score"] = float(hunter_direction_score)
@@ -3092,13 +3084,13 @@ class UAVPursuitEnv(object):
         ).astype(np.float32)
         escape_gap_reward = (escape_gap_hunter_reward + escape_gap_target_reward).astype(np.float32)
 
-        # Step 3: 归一化速度线性惩罚，避免数值爆炸
+        # Step 3: 归一化速度线性惩罚，避免数值爆炸。 0速度也有惩罚，加速任务执行
         speed_penalty_vals = []
         for a in self.agents:
             vmax = max(float(a.max_speed), 1e-6)
             speed_norm = float(np.linalg.norm(a.velocity)) / vmax
             speed_penalty_vals.append(speed_norm)
-        speed_penalty_reward = -self.speed_penalty * np.asarray(speed_penalty_vals, dtype=np.float32)
+        speed_penalty_reward = -self.speed_penalty * (1 + np.asarray(speed_penalty_vals, dtype=np.float32))
 
         # Step 4: 聚合总奖励与子项
         total = (

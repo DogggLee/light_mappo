@@ -1,13 +1,13 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: ser_Evalb50_sBuf_rndPolicy_v3v1_esc20_deltaBase5_Zone
+  experiment_name: rndPolicy_v3v1_esc20_deltaBase5_Zone
   seed: 1
   num_env_steps: 2000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
 
 # Environment settings (common)
 env:
-  env_name: Pursuit-Ablation
+  env_name: NewEscape-Pursuit-Ablation
   world_size: 200
   episode_length: 400 # max steps per episode
   max_hunters_num: 3
@@ -60,8 +60,8 @@ reward:
   # 新版拆分项：拦截reward（基于direction_score，速度低于阈值不计算）
   escape_gap_intercept_hunter_reward_scale: 3.0
   escape_gap_intercept_target_reward_scale: 6.0
-  escape_gap_quality_worst_penalty_threshold: 0.85  # gap_open_ratio超过该阈值开始惩罚
-  escape_gap_quality_worst_penalty_scale: 0.5 
+  escape_gap_quality_worst_penalty_threshold: 0.7  # gap_open_ratio超过该阈值开始惩罚
+  escape_gap_quality_worst_penalty_scale: 3.0
   escape_radius: 35.0
 
   # Capture reward
@@ -70,7 +70,7 @@ reward:
   capture_reward_allocation: encircle  # Choices: ["team", "alone", "encircle"]
 
   # Speed Penalty
-  speed_penalty: 0.02
+  speed_penalty: 0.3
 
 # Model/network settings
 model:
