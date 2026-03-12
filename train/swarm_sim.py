@@ -161,6 +161,7 @@ class MissionConfig:
     hunters_wait_mode: str = "split"
     explorer_track_speed_scale: float = 1.2
     loss_timeout_steps: int = 40
+    target_min_init_separation: float = 5.0
     explorer_total_endurance: float = 12000.0
     hunter_total_endurance: float = 12000.0
     endurance_idle_cost: float = 0.2
@@ -404,7 +405,12 @@ class SwarmSimulationCore:
             hunters_wait_mode="split",
             explorer_track_speed_scale=1.2,
             loss_timeout_steps=40,
+            target_min_init_separation=5.0,
         )
+
+        default_policy = str(env_cfg.target_policy_source).lower()
+        self.target_policy_choices: List[str] = [default_policy]
+        self.target_policy_probs: Dict[str, float] = {default_policy: 1.0}
 
         self.weights = AssignmentWeights()
         self._apply_sim_overrides(sim_overrides)
@@ -457,6 +463,9 @@ class SwarmSimulationCore:
                 1,
                 int(mission_cfg.get("loss_timeout_steps", self.mission.loss_timeout_steps)),
             )
+            self.mission.target_min_init_separation = float(
+                mission_cfg.get("target_min_init_separation", self.mission.target_min_init_separation)
+            )
             self.mission.explorer_total_endurance = float(
                 mission_cfg.get("explorer_total_endurance", self.mission.explorer_total_endurance)
             )
@@ -480,6 +489,19 @@ class SwarmSimulationCore:
             self.weights.max_assign_dist = float(
                 assign_cfg.get("max_assign_dist", self.weights.max_assign_dist)
             )
+
+        target_cfg = sim_overrides.get("target", {})
+        if isinstance(target_cfg, dict):
+            choices_raw = target_cfg.get("policy_choices", self.target_policy_choices)
+            if isinstance(choices_raw, list) and len(choices_raw) > 0:
+                self.target_policy_choices = [str(x).lower() for x in choices_raw]
+            probs_raw = target_cfg.get("policy_probs", self.target_policy_probs)
+            if isinstance(probs_raw, dict) and len(probs_raw) > 0:
+                tmp_probs: Dict[str, float] = {}
+                for key, val in probs_raw.items():
+                    tmp_probs[str(key).lower()] = float(max(0.0, float(val)))
+                if len(tmp_probs) > 0:
+                    self.target_policy_probs = tmp_probs
 
     def reset_world(self):
         """
@@ -550,8 +572,22 @@ class SwarmSimulationCore:
             )
 
         target_cfg = getattr(self.cfg, "Target")
-        policy_source = str(self.cfg.env.target_policy_source).lower()
+        target_init_positions: List[np.ndarray] = []
+        policy_plan: List[str] = []
+        unique_choices = []
+        for c in self.target_policy_choices:
+            cc = str(c).lower()
+            if cc not in unique_choices:
+                unique_choices.append(cc)
+        if len(unique_choices) > 1 and int(self.mission.targets) >= len(unique_choices):
+            perm = list(unique_choices)
+            self.rng.shuffle(perm)
+            policy_plan.extend(perm)
+        while len(policy_plan) < int(self.mission.targets):
+            policy_plan.append(self._sample_target_policy_type())
+
         for idx in range(int(self.mission.targets)):
+            policy_source = str(policy_plan[idx]).lower()
             patrol_route = self.patrol_routes[idx % len(self.patrol_routes)] if len(self.patrol_routes) > 0 else None
             agent = TargetAgent(
                 agent_id=idx,
@@ -585,10 +621,28 @@ class SwarmSimulationCore:
                 boundary_smooth_alpha=float(getattr(self.cfg.env, "target_boundary_smooth_alpha", 0.25)),
                 boundary_lookahead_steps=int(getattr(self.cfg.env, "target_boundary_lookahead_steps", 5)),
             )
-            init_pos = self._sample_position()
-            if policy_source == "patrol" and patrol_route is not None and len(patrol_route) > 0:
-                init_pos = patrol_route[0]
-            agent.reset(init_pos)
+            init_pos = self._sample_position_with_separation(
+                existed=target_init_positions,
+                min_dist=float(self.mission.target_min_init_separation),
+            )
+            if policy_source == "patrol" and len(self.patrol_routes) > 0:
+                route_index = int(idx % len(self.patrol_routes))
+                waypoint_count = len(self.patrol_routes[route_index])
+                waypoint_idx = self._select_patrol_start_waypoint_index(
+                    route=self.patrol_routes[route_index],
+                    existed=target_init_positions,
+                    min_dist=float(self.mission.target_min_init_separation),
+                ) if waypoint_count > 0 else 0
+                agent.reset(init_pos, force_route_index=route_index)
+                if waypoint_count > 0:
+                    agent.patrol_index = waypoint_idx
+                    agent.position = np.asarray(
+                        self.patrol_routes[route_index][waypoint_idx], dtype=np.float32
+                    ).copy()
+                    agent.trajectory = [agent.position.copy()]
+            else:
+                agent.reset(init_pos)
+            target_init_positions.append(np.asarray(agent.position, dtype=np.float32).copy())
             self.target_actor.reset_target(idx)
             value = float(self.rng.uniform(1.0, 10.0))
             required = int(np.clip(int(round(value / 2.0)), 1, 5))
@@ -734,6 +788,83 @@ class SwarmSimulationCore:
         """
         ws = float(self.mission.world_size)
         return self.rng.uniform(-ws * 0.9, ws * 0.9, size=(2,)).astype(np.float32)
+
+    def _sample_position_with_separation(self, existed: List[np.ndarray], min_dist: float) -> np.ndarray:
+        """
+        功能:
+            采样与既有位置保持最小间隔的新位置。
+        输入:
+            existed (List[np.ndarray]): 已占用位置列表。
+            min_dist (float): 最小间隔距离。
+        输出:
+            np.ndarray: 新采样位置。
+        """
+        min_d = float(max(0.0, min_dist))
+        candidate = self._sample_position()
+        for _ in range(50):
+            ok = True
+            for p in existed:
+                if float(np.linalg.norm(candidate - np.asarray(p, dtype=np.float32))) < min_d:
+                    ok = False
+                    break
+            if ok:
+                return candidate
+            candidate = self._sample_position()
+        return candidate
+
+    def _sample_target_policy_type(self) -> str:
+        """
+        功能:
+            按独立配置采样Target策略类型。
+        输入:
+            无。
+        输出:
+            str: 策略类型。
+        """
+        choices = [str(x).lower() for x in self.target_policy_choices]
+        if len(choices) <= 0:
+            return str(self.cfg.env.target_policy_source).lower()
+
+        probs = np.asarray([float(max(0.0, self.target_policy_probs.get(c, 0.0))) for c in choices], dtype=np.float32)
+        if float(np.sum(probs)) <= 1e-8:
+            return choices[int(self.rng.randint(0, len(choices)))]
+        probs = probs / float(np.sum(probs))
+        return str(self.rng.choice(choices, p=probs))
+
+    def _select_patrol_start_waypoint_index(
+        self,
+        route: List[np.ndarray],
+        existed: List[np.ndarray],
+        min_dist: float,
+    ) -> int:
+        """
+        功能:
+            在巡逻航点中选择与既有目标尽量分散的起始航点索引。
+        输入:
+            route (List[np.ndarray]): 巡逻航点列表。
+            existed (List[np.ndarray]): 已占用目标位置列表。
+            min_dist (float): 目标最小间隔期望。
+        输出:
+            int: 起始航点索引。
+        """
+        if len(route) <= 0:
+            return 0
+        if len(existed) <= 0:
+            return int(self.rng.randint(0, len(route)))
+
+        best_idx = 0
+        best_score = -1e9
+        min_d_req = float(max(0.0, min_dist))
+        for idx, wp in enumerate(route):
+            pos = np.asarray(wp, dtype=np.float32)
+            dmin = min(
+                float(np.linalg.norm(pos - np.asarray(ep, dtype=np.float32))) for ep in existed
+            )
+            score = dmin if dmin >= min_d_req else (dmin - min_d_req)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        return int(best_idx)
 
     def _move_targets(self):
         """
@@ -2182,6 +2313,31 @@ class SwarmSimGUI:
 
         if len(drone_rows) > max_rows:
             ax.text(0.02, 0.02, f"+{len(drone_rows)-max_rows} more", fontsize=7, color="#666666")
+
+        # Step 3: 目标分配明细（E/H映射）
+        ax.text(0.02, 0.16, "目标分配", va="top", fontsize=9, fontweight="bold")
+        assign_y = 0.13
+        for tid, target in enumerate(self.sim.targets[:6]):
+            if not target.alive:
+                status = "CAP"
+            elif target.pursuit_started:
+                status = "PUR"
+            elif target.in_pool:
+                status = "DIS"
+            else:
+                status = "UND"
+            ex_tag = int(target.assigned_explorer)
+            hs_tag = [int(x) for x in list(target.assigned_hunters)]
+            ax.text(
+                0.02,
+                assign_y,
+                f"T{int(tid)}[{status}] p={str(target.policy_type)[:3]} E{ex_tag} H{hs_tag}",
+                fontsize=6.6,
+                va="center",
+            )
+            assign_y -= 0.03
+            if assign_y < 0.01:
+                break
 
     def _format_endurance_bar(self, remain: float, total: float, width: int = 10) -> str:
         """

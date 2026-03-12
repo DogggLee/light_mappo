@@ -10,9 +10,17 @@ swarm_sim:
     hunters_wait_mode: split  # Choices: [split, zone]
     explorer_track_speed_scale: 1.2
     loss_timeout_steps: 40
+    target_min_init_separation: 8.0
     explorer_total_endurance: 12000.0
     hunter_total_endurance: 12000.0
     endurance_idle_cost: 0.2
+
+  target:
+    policy_choices: [random, patrol, escape]
+    policy_probs:
+      random: 0.4
+      patrol: 0.3
+      escape: 0.3
 
   assignment:
     distance_weight: 1.0
