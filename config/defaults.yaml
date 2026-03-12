@@ -87,6 +87,7 @@ reward:
   base_reward_topk_enable: false
   base_reward_topk_k: 2
   base_reward_non_topk_scale: 0.1
+  base_reward_inside_escape_scale: 0.4  # d<=escape_radius时base_reward缩放，避免与escape_gap冲突
   
   base_delta_window: 10
   base_delta_hunter_scale: 1.0
@@ -112,6 +113,8 @@ reward:
   # 新版拆分项：拦截reward（基于direction_score，速度低于阈值不计算）
   escape_gap_intercept_hunter_reward_scale: 0.2
   escape_gap_intercept_target_reward_scale: 0.2
+  escape_gap_quality_worst_penalty_threshold: 0.85  # gap_open_ratio超过该阈值开始惩罚
+  escape_gap_quality_worst_penalty_scale: 0.5       # 接近worst时惩罚强度
   escape_radius: 35.0
   escape_block_scale: 0.7
   escape_gap_angle_bins: 360
@@ -186,8 +189,6 @@ eval:
   scenario_suite_val: datasets/val
   scenario_suite_test: datasets/test
   eval_episode_length: 600
-  eval_batch_size: 50         # <=0 表示不分批；>0 时每批最多评估多少个环境
-  eval_batch_by_hunter_count: true   # 分批时先按num_hunters分组，再做batch切片
   fixed_tasks: []
   fixed_tasks_file: null
 

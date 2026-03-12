@@ -98,7 +98,7 @@ def main(args):
         merged_cfg = load_config(Path(args.run_dir) / "train_cfg.yaml")
 
     use_cuda = (bool(args.cuda) or bool(merged_cfg.exp.cuda)) and torch.cuda.is_available()
-    merged_cfg.logging.log_gif = True
+    merged_cfg.logging.log_gif = False
 
     if use_cuda:
         print("choose to use gpu...")
@@ -111,8 +111,6 @@ def main(args):
         device = torch.device("cpu")
         torch.set_num_threads(int(merged_cfg.exp.n_training_threads))
 
-    
-
     # Step 3: 固定随机种子，构建训练/评估环境
     torch.manual_seed(int(merged_cfg.exp.seed))
     torch.cuda.manual_seed_all(int(merged_cfg.exp.seed))
@@ -120,6 +118,24 @@ def main(args):
 
     if not bool(merged_cfg.eval.use_eval):
         merged_cfg.eval.use_eval = True
+
+    # Step 3.1: 注入eval调试开关（每step渲染/绘图）。
+    merged_cfg.eval.step_render = bool(args.render)
+    merged_cfg.eval.step_plot = bool(args.plot)
+    if bool(args.render):
+        merged_cfg.render.use_render = True
+    print(
+        "[EvalOnlyDebug] step_render={}, step_plot={}".format(
+            bool(merged_cfg.eval.step_render),
+            bool(merged_cfg.eval.step_plot),
+        )
+    )
+    
+    if args.task_file:
+        print(f"Override task file from {merged_cfg.eval.fixed_tasks_file} to {args.task_file}")
+        merged_cfg.eval.fixed_tasks_file = args.task_file
+        
+
     eval_task_specs, from_external_file = _load_eval_task_specs(merged_cfg)
     if bool(from_external_file) and eval_task_specs is not None:
         merged_cfg.exp.n_eval_rollout_threads = int(len(eval_task_specs))
@@ -201,6 +217,17 @@ if __name__ == "__main__":
     parser.add_argument("--cuda", action="store_true", help="Use GPU if available")
     parser.add_argument("--total_num_steps", type=int, default=None, help="Override total_num_steps for eval logging")
     parser.add_argument("--episode", type=int, default=None, help="Override episode id used in eval/GIF naming")
+    parser.add_argument("--task_file", type=str, default=None, help="Override Eval fixed task file used in eval")
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render eval env at every step during sequential evaluation.",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Plot per-step debug curves (hunter cumulative rewards and escape-gap metrics).",
+    )
     parser.add_argument(
         "--model_glob",
         type=str,

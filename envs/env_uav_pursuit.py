@@ -22,6 +22,8 @@ import matplotlib
 if os.environ.get("DISPLAY", "") == "" and os.environ.get("MPLBACKEND") is None:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import Wedge
 
@@ -402,6 +404,8 @@ class TargetAgent(BaseAgent):
         escape_gap_intercept_hunter_reward_scale: float = 0.0,
         escape_gap_intercept_target_reward_scale: float = 0.0,
         escape_gap_min_speed: float = 0.2,
+        escape_gap_quality_worst_penalty_threshold: float = 0.85,
+        escape_gap_quality_worst_penalty_scale: float = 0.5,
         boundary_avoid_enable: bool = True,
         boundary_influence_ratio: float = 0.30,
         boundary_enter_ratio: float = 0.15,
@@ -439,6 +443,8 @@ class TargetAgent(BaseAgent):
             escape_gap_intercept_hunter_reward_scale (float): Hunter侧拦截奖励缩放系数。
             escape_gap_intercept_target_reward_scale (float): Target侧逃逸方向奖励缩放系数。
             escape_gap_min_speed (float): 计算逃脱方向奖励的最低Target速度阈值（米/秒）。
+            escape_gap_quality_worst_penalty_threshold (float): 接近worst gap惩罚触发阈值（0~1）。
+            escape_gap_quality_worst_penalty_scale (float): 接近worst gap惩罚强度。
             boundary_avoid_enable (bool): 是否启用边界软约束。
             boundary_influence_ratio (float): 软约束生效半径占world_size比例。
             boundary_enter_ratio (float): 边界保护进入阈值占world_size比例。
@@ -479,6 +485,10 @@ class TargetAgent(BaseAgent):
         self.escape_gap_intercept_hunter_reward_scale = float(max(0.0, escape_gap_intercept_hunter_reward_scale))
         self.escape_gap_intercept_target_reward_scale = float(max(0.0, escape_gap_intercept_target_reward_scale))
         self.escape_gap_min_speed = float(max(0.0, escape_gap_min_speed))
+        self.escape_gap_quality_worst_penalty_threshold = float(
+            np.clip(float(escape_gap_quality_worst_penalty_threshold), 0.0, 1.0)
+        )
+        self.escape_gap_quality_worst_penalty_scale = float(max(0.0, escape_gap_quality_worst_penalty_scale))
         self.boundary_avoid_enable = bool(boundary_avoid_enable)
         self.boundary_influence_ratio = float(max(0.01, boundary_influence_ratio))
         self.boundary_enter_ratio = float(max(0.0, boundary_enter_ratio))
@@ -1128,17 +1138,65 @@ class TargetAgent(BaseAgent):
             return 0.0, 0.0, 0.0, 0.0, [], gap_info
 
         max_gap_angle = float(gap_info.get("max_gap_angle", 0.0))
-        gap_open_score = float(np.clip(max_gap_angle / (2.0 * np.pi), 0.0, 1.0))
-        encircle_score = 1.0 - gap_open_score
+        n_encircle = int(len(encircling_hunter_ids))
+        rep_block_lengths = [
+            float(max(0.0, hunters[int(hid)].block_length))
+            for hid in encircling_hunter_ids
+            if int(hid) >= 0 and int(hid) < len(hunters)
+        ]
+        representative_block_length = float(np.mean(rep_block_lengths)) if len(rep_block_lengths) > 0 else 0.0
+        escape_radius = float(max(self.escape_dis, 1e-6))
+
+        # 单个无人机可以产生的最小拦截角度
+        angle_blk = float(2.0 * np.arctan(representative_block_length / escape_radius))
+        full_circle = float(2.0 * np.pi)
+
+        # 理想情况下，参与包围的无人机能够产生的最大可逃脱角度（完美均匀分布）
+        ideal_gap = float((full_circle - float(n_encircle) * angle_blk) / max(1, n_encircle))
+        ideal_gap = float(np.clip(ideal_gap, 0.0, full_circle))
+
+        # 最坏情况下，所有无人机只在
+        worst_gap = float(full_circle - angle_blk)
+        worst_gap = float(np.clip(worst_gap, 0.0, full_circle))
+        if worst_gap <= ideal_gap + 1e-8:
+            gap_open_ratio = float(np.clip(max_gap_angle / full_circle, 0.0, 1.0))
+        else:
+            gap_open_ratio = float(
+                np.clip((max_gap_angle - ideal_gap) / max(1e-8, worst_gap - ideal_gap), 0.0, 1.0)
+            )
+        encircle_score = float(1.0 - gap_open_ratio)
+        gap_open_score = float(gap_open_ratio)
+
+        worst_thr = float(self.escape_gap_quality_worst_penalty_threshold)
+        if gap_open_ratio <= worst_thr:
+            worst_penalty = 0.0
+        else:
+            worst_penalty = float(
+                np.clip((gap_open_ratio - worst_thr) / max(1e-8, 1.0 - worst_thr), 0.0, 1.0)
+            )
+        hunter_quality_score = float(
+            np.clip(
+                encircle_score - float(self.escape_gap_quality_worst_penalty_scale) * worst_penalty,
+                -1.0,
+                1.0,
+            )
+        )
+        target_quality_score = float(
+            np.clip(
+                gap_open_score + float(self.escape_gap_quality_worst_penalty_scale) * worst_penalty,
+                0.0,
+                1.0,
+            )
+        )
 
         # Step 1: 包围质量奖励（仅依赖encircle_score / gap_open_score）。
         hunter_encircle_reward_value = (
             float(self.escape_gap_encircle_hunter_reward_scale)
-            * float(max(0.0, encircle_score))
+            * float(hunter_quality_score)
         )
         target_encircle_reward_value = (
             float(self.escape_gap_encircle_target_reward_scale)
-            * float(max(0.0, gap_open_score))
+            * float(target_quality_score)
         )
 
         # Step 2: 拦截奖励（仅依赖direction_score；Target速度过小时跳过）。
@@ -1167,6 +1225,13 @@ class TargetAgent(BaseAgent):
 
         gap_info["encircle_score"] = float(encircle_score)
         gap_info["gap_open_score"] = float(gap_open_score)
+        gap_info["ideal_escape_gap_angle"] = float(ideal_gap)
+        gap_info["worst_escape_gap_angle"] = float(worst_gap)
+        gap_info["angle_blk"] = float(angle_blk)
+        gap_info["gap_open_ratio"] = float(gap_open_ratio)
+        gap_info["worst_penalty"] = float(worst_penalty)
+        gap_info["hunter_quality_score"] = float(hunter_quality_score)
+        gap_info["target_quality_score"] = float(target_quality_score)
         gap_info["hunter_direction_score"] = float(hunter_direction_score)
         gap_info["target_direction_score"] = float(target_direction_score)
         gap_info["direction_reward_enabled"] = bool(direction_reward_enabled)
@@ -1268,6 +1333,9 @@ class UAVPursuitEnv(object):
         self.base_reward_non_topk_scale = float(
             np.clip(float(reward_cfg.base_reward_non_topk_scale), 0.0, 1.0)
         )
+        self.base_reward_inside_escape_scale = float(
+            np.clip(float(getattr(reward_cfg, "base_reward_inside_escape_scale", 1.0)), 0.0, 1.0)
+        )
         self.base_reward_mode = str(getattr(reward_cfg, "base_reward_mode", "legacy")).lower()
         if self.base_reward_mode not in ("legacy", "delta_window"):
             raise ValueError(
@@ -1346,6 +1414,16 @@ class UAVPursuitEnv(object):
             escape_gap_encircle_target_reward_scale = 0.0
             escape_gap_intercept_hunter_reward_scale = 0.0
             escape_gap_intercept_target_reward_scale = 0.0
+        escape_gap_quality_worst_penalty_threshold = float(
+            np.clip(
+                float(getattr(reward_cfg, "escape_gap_quality_worst_penalty_threshold", 0.85)),
+                0.0,
+                1.0,
+            )
+        )
+        escape_gap_quality_worst_penalty_scale = float(
+            max(0.0, float(getattr(reward_cfg, "escape_gap_quality_worst_penalty_scale", 0.5)))
+        )
         escape_radius = float(max(0.0, reward_cfg.escape_radius))
         escape_gap_angle_bins = int(max(16, int(reward_cfg.escape_gap_angle_bins)))
         escape_gap_min_speed = float(max(0.0, reward_cfg.escape_gap_min_speed))
@@ -1400,6 +1478,7 @@ class UAVPursuitEnv(object):
             (self.agent_num, self.coord_summary_feat_dim),
             dtype=np.float32,
         )
+        self._human_render_fig = None
 
         # 步骤4：初始化Agent对象
         patrol_routes = self._load_patrol_routes(
@@ -1445,6 +1524,8 @@ class UAVPursuitEnv(object):
             escape_gap_intercept_hunter_reward_scale=float(escape_gap_intercept_hunter_reward_scale),
             escape_gap_intercept_target_reward_scale=float(escape_gap_intercept_target_reward_scale),
             escape_gap_min_speed=float(escape_gap_min_speed),
+            escape_gap_quality_worst_penalty_threshold=float(escape_gap_quality_worst_penalty_threshold),
+            escape_gap_quality_worst_penalty_scale=float(escape_gap_quality_worst_penalty_scale),
             boundary_avoid_enable=bool(self.target_boundary_avoid_enable),
             boundary_influence_ratio=float(self.target_boundary_influence_ratio),
             boundary_enter_ratio=float(self.target_boundary_enter_ratio),
@@ -1972,8 +2053,7 @@ class UAVPursuitEnv(object):
         if self.target.alive and not target_collided:
             captured = self._update_capture_counter()
             if captured:
-                self.target.alive = False
-                self.target.velocity[:] = 0.0
+                # 捕获步先计算reward，再置target为死亡，确保该步escape_gap指标与奖励正常计算。
                 self.last_episode_captured = True
                 if self.last_capture_step is None:
                     self.last_capture_step = int(self.step_count + 1)
@@ -1990,6 +2070,11 @@ class UAVPursuitEnv(object):
         self.reward_step_count += 1
         self.hunter_reward_last = hunter_reward_mean
         self.target_reward_last = target_reward_value
+
+        # 步骤4.1：奖励计算完成后再更新捕获状态，避免capture步escape_gap被alive门控清零。
+        if captured:
+            self.target.alive = False
+            self.target.velocity[:] = 0.0
 
         # 步骤5：终止条件判定
         self.step_count += 1
@@ -2077,8 +2162,23 @@ class UAVPursuitEnv(object):
         if mode not in ("rgb_array", "human"):
             raise NotImplementedError(f"Unsupported render mode: {mode}")
 
-        # Step 2: 创建画布并设置坐标范围
-        fig, ax = plt.subplots(figsize=(6.4, 6.4), dpi=100)
+        # Step 2: 创建或复用画布并设置坐标范围
+        if mode == "human":
+            need_new_fig = (
+                self._human_render_fig is None
+                or (not plt.fignum_exists(int(self._human_render_fig.number)))
+            )
+            if need_new_fig:
+                self._human_render_fig, ax = plt.subplots(figsize=(6.4, 6.4), dpi=100)
+            else:
+                fig_tmp = self._human_render_fig
+                fig_tmp.clf()
+                ax = fig_tmp.add_subplot(111)
+            fig = self._human_render_fig
+        else:
+            fig = Figure(figsize=(6.4, 6.4), dpi=100)
+            canvas = FigureCanvasAgg(fig)
+            ax = fig.add_subplot(111)
         ws = float(self.world_size)
         ax.set_xlim(-ws, ws)
         ax.set_ylim(-ws, ws)
@@ -2441,13 +2541,12 @@ class UAVPursuitEnv(object):
         # Step 10: 返回RGB数组或直接展示
         if mode == "human":
             plt.show(block=False)
+            fig.canvas.draw_idle()
             plt.pause(0.001)
-            plt.close(fig)
             return None
 
-        fig.canvas.draw()
-        image = np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)[..., :3].copy()
-        plt.close(fig)
+        canvas.draw()
+        image = np.asarray(canvas.buffer_rgba(), dtype=np.uint8)[..., :3].copy()
         return image
 
     def close(self):
@@ -2459,6 +2558,12 @@ class UAVPursuitEnv(object):
         输出:
             无。
         """
+        if self._human_render_fig is not None:
+            try:
+                plt.close(self._human_render_fig)
+            except Exception:
+                pass
+            self._human_render_fig = None
         plt.close("all")
 
     def _team_sees_target(self):
@@ -2865,6 +2970,11 @@ class UAVPursuitEnv(object):
                     d_prev_avg = float(np.mean(hist)) if len(hist) > 0 else d_now
                     delta_norm = float(np.clip((d_prev_avg - d_now) / norm_scale, -1.0, 1.0))
                     hunter_base_reward[hid] = float(self.base_delta_hunter_scale) * delta_norm
+                    if (
+                        float(getattr(self.target, "escape_dis", 0.0)) > 0.0
+                        and d_now <= float(self.target.escape_dis)
+                    ):
+                        hunter_base_reward[hid] *= float(self.base_reward_inside_escape_scale)
                     delta_norm_values.append(delta_norm)
                 else:
                     hunter_base_reward[hid] = 0.0
@@ -2877,6 +2987,12 @@ class UAVPursuitEnv(object):
             # Step 1.2: Target base reward取Hunter改变量的反向均值（归一化后）。
             mean_delta_norm = float(np.mean(delta_norm_values)) if len(delta_norm_values) > 0 else 0.0
             target_base_reward[self.target_index] = -float(self.base_delta_target_scale) * mean_delta_norm
+            min_d_for_scale = min(hunter_d) if len(hunter_d) > 0 else float("inf")
+            if (
+                float(getattr(self.target, "escape_dis", 0.0)) > 0.0
+                and min_d_for_scale <= float(self.target.escape_dis)
+            ):
+                target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
             avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
             target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
         else:
@@ -2908,6 +3024,11 @@ class UAVPursuitEnv(object):
                 else:
                     far_ratio = (d - capture_dis_safe) / dist_scale
                     hunter_base_reward[i] = -self.base_far_scale * far_ratio * base_scale
+                if (
+                    float(getattr(self.target, "escape_dis", 0.0)) > 0.0
+                    and d <= float(self.target.escape_dis)
+                ):
+                    hunter_base_reward[i] *= float(self.base_reward_inside_escape_scale)
 
                 streak_i = int(min(int(self.capture_counter[i]), streak_cap))
                 streak_used.append(streak_i)
@@ -2920,6 +3041,11 @@ class UAVPursuitEnv(object):
             else:
                 far_ratio_t = (min_d - capture_dis_safe) / dist_scale
                 target_base_reward[self.target_index] = self.base_far_scale * far_ratio_t
+            if (
+                float(getattr(self.target, "escape_dis", 0.0)) > 0.0
+                and min_d <= float(self.target.escape_dis)
+            ):
+                target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
 
             avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
             target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
@@ -2948,7 +3074,7 @@ class UAVPursuitEnv(object):
                     continue
                 escape_gap_encircle_hunter_reward[int(hid)] = float(gap_hunter_encircle_reward_value)
                 escape_gap_intercept_hunter_reward[int(hid)] = float(gap_hunter_intercept_reward_value)
-        if bool(self.target.alive):
+        if bool(self.target.alive) and (not bool(captured)):
             escape_gap_encircle_target_reward[self.target_index] = float(gap_target_encircle_reward_value)
             escape_gap_intercept_target_reward[self.target_index] = float(gap_target_intercept_reward_value)
 

@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Evalb50_sBuf_patrolPolicy_v3v1_esc20_deltaBase5_Zone
+  experiment_name: ser_Evalb50_sBuf_rndPolicy_v3v1_esc20_deltaBase5_Zone
   seed: 1
   num_env_steps: 2000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -43,9 +43,7 @@ reward:
   base_near_scale: 1.0
   base_streak_scale: 0.5
   base_streak_cap: 30
-  base_reward_topk_enable: false
-  base_reward_topk_k: 4
-  base_reward_non_topk_scale: 0.1
+  base_reward_inside_escape_scale: 0.4  # d<=escape_radius时base_reward缩放，避免与escape_gap冲突
 
   base_delta_window: 5
   base_delta_hunter_scale: 1.0
@@ -62,6 +60,8 @@ reward:
   # 新版拆分项：拦截reward（基于direction_score，速度低于阈值不计算）
   escape_gap_intercept_hunter_reward_scale: 3.0
   escape_gap_intercept_target_reward_scale: 6.0
+  escape_gap_quality_worst_penalty_threshold: 0.85  # gap_open_ratio超过该阈值开始惩罚
+  escape_gap_quality_worst_penalty_scale: 0.5 
   escape_radius: 35.0
 
   # Capture reward
@@ -100,7 +100,7 @@ eval:
 
 domain_randomization:
   train_split:
-    enable: false
+    enable: true
     regen_interval_episode: 20
     regen_prob: 1.0
     hunter_count_choices: [1, 2, 3]

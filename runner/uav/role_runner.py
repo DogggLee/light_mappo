@@ -119,6 +119,8 @@ class RoleBasedRunner(object):
         self.log_gif = bool(getattr(self.cfg.logging, "log_gif", True))
         self.time_stat = bool(runner_cfg.get("time_stat", False))
         self.gif_start_step = int(self.cfg.render.gif_start_step)
+        self.eval_step_render = bool(getattr(self.cfg.eval, "step_render", False))
+        self.eval_step_plot = bool(getattr(self.cfg.eval, "step_plot", False))
         # 训练阶段默认仅绘制第0个rollout环境，降低开销；评估仍绘制全部eval环境。
         self.train_gif_env_ids = [0]
 
@@ -156,6 +158,12 @@ class RoleBasedRunner(object):
             )
         )
         print("[GIFConfig] log_gif(train_stage)={}".format(bool(self.log_gif)))
+        print(
+            "[EvalDebug] step_render={}, step_plot={}".format(
+                bool(self.eval_step_render),
+                bool(self.eval_step_plot),
+            )
+        )
         print("[BufferMode] role_buffer_mode={}".format(str(self.role_buffer_mode)))
 
         # Step 4: 仅在算法组件初始化时构建flat args
@@ -1187,7 +1195,7 @@ class RoleBasedRunner(object):
     ):
         """
         功能:
-            执行周期性evaluation（每个eval_env运行1个episode），
+            执行周期性evaluation（严格串行：每次仅评估一个fixed env），
             记录reward/捕获率/捕获步数；仅在save_gifs=True时保存GIF。
         输入:
             total_num_steps (int): 当前累计环境步数。
@@ -1216,282 +1224,61 @@ class RoleBasedRunner(object):
                 "total_eval_episodes": 0,
             }
 
-        eval_obs = eval_envs.reset(mode="recover")
-        n_env = int(eval_obs.shape[0])
-        eval_num_agents = int(eval_obs.shape[1])
+        if not (hasattr(eval_envs, "envs") and isinstance(getattr(eval_envs, "envs"), list)):
+            raise TypeError("Sequential eval requires DummyVecEnv-like eval_envs with `.envs` list.")
+
+        eval_obs_all = eval_envs.reset(mode="recover")
+        n_env = int(eval_obs_all.shape[0])
+        eval_num_agents = int(eval_obs_all.shape[1])
         eval_num_hunters = int(max(1, eval_num_agents - 1))
-        eval_target_index = int(eval_num_agents - 1)
-        act_dim = int(eval_envs.action_space[0].shape[0])
-        eval_controlled_agents = list(range(eval_num_hunters))
-        if self.target_trainable:
-            eval_controlled_agents.append(eval_target_index)
-        eval_batch_size_cfg = int(getattr(self.cfg.eval, "eval_batch_size", 0))
-        eval_batch_size = int(n_env) if eval_batch_size_cfg <= 0 else int(max(1, eval_batch_size_cfg))
-        eval_batch_by_hunter_count = bool(getattr(self.cfg.eval, "eval_batch_by_hunter_count", True))
-        eval_env_batches = self._build_eval_env_batches(
-            eval_envs=eval_envs,
-            n_env=n_env,
-            eval_batch_size=eval_batch_size,
-            batch_by_hunter_count=eval_batch_by_hunter_count,
-        )
 
         self._print_timed(
-            "[EvalStart] bucket={}, episode={}, total_steps={}, eval_envs={}, batch_size={}, batches={}, by_hunters={}".format(
-                str(bucket),
-                int(episode),
-                int(total_num_steps),
-                n_env,
-                int(eval_batch_size),
-                int(len(eval_env_batches)),
-                bool(eval_batch_by_hunter_count),
+            "[EvalStart] bucket={}, episode={}, total_steps={}, eval_envs={}, mode=sequential(one-by-one)".format(
+                str(bucket), int(episode), int(total_num_steps), n_env
             )
         )
-        is_dummy_vec_env = hasattr(eval_envs, "envs") and isinstance(getattr(eval_envs, "envs"), list)
-        use_batched_single_env_step = bool(is_dummy_vec_env)
-        if hasattr(eval_envs, "capture_terminal_frame"):
-            eval_envs.capture_terminal_frame = bool(save_gifs)
-
-        eval_rnn_states = {
-            aid: np.zeros((n_env, self.recurrent_N, self.hidden_size), dtype=np.float32)
-            for aid in eval_controlled_agents
-        }
-        eval_masks = {
-            aid: np.ones((n_env, 1), dtype=np.float32)
-            for aid in eval_controlled_agents
-        }
 
         env_episode_rewards = np.zeros(n_env, dtype=np.float32)
         env_captured = np.zeros(n_env, dtype=bool)
         env_capture_step = np.full(n_env, -1, dtype=np.int32)
         env_alive_rate = np.full(n_env, 0.0, dtype=np.float32)
         env_active_hunter_count = np.full(n_env, int(eval_num_hunters), dtype=np.int32)
-        # 每个环境仅记录“首次成功捕捉时刻”的escape_gap_angle。
         env_capture_escape_gap_angle = np.full(n_env, np.nan, dtype=np.float32)
-        env_finished = np.zeros(n_env, dtype=bool)
+
         gif_env_ids = list(range(n_env))
         if gif_env_limit is not None:
             gif_env_ids = list(range(max(0, min(int(gif_env_limit), int(n_env)))))
         gif_env_id_set = set(gif_env_ids)
-        out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
-        if save_gifs:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        eval_frames = {int(env_i): [] for env_i in gif_env_ids}
 
-        # Step 2: 记录初始帧
-        if save_gifs:
-            for env_i in gif_env_ids:
-                frame = eval_envs.render(
-                    mode="rgb_array",
-                    env_id=int(env_i),
-                    title=f"Eval({str(bucket)}) Episode {int(episode)}",
+        # Step 2: 逐环境串行评估。每个环境结束后立即recover reset。
+        plot_ctx = self._init_eval_debug_plot(
+            env_i=0,
+            episode=int(episode),
+            bucket=str(bucket),
+            num_hunters=int(eval_num_hunters),
+        )
+        try:
+            for env_i in range(n_env):
+                one_result = self.eval_one_env(
+                    eval_envs=eval_envs,
+                    env_i=int(env_i),
+                    episode=episode,
+                    bucket=bucket,
+                    save_gif=bool(save_gifs and env_i in gif_env_id_set),
+                    gif_output_dir=gif_output_dir,
+                    plot_ctx=plot_ctx,
                 )
-                if isinstance(frame, np.ndarray):
-                    eval_frames[int(env_i)].append(frame.copy())
+                env_episode_rewards[env_i] = float(one_result["episode_reward"])
+                env_captured[env_i] = bool(one_result["captured"])
+                env_capture_step[env_i] = int(one_result["capture_step"])
+                env_alive_rate[env_i] = float(one_result["alive_rate"])
+                env_active_hunter_count[env_i] = int(one_result["active_hunter_count"])
+                env_capture_escape_gap_angle[env_i] = float(one_result["capture_escape_gap_angle"])
+                self._reset_single_eval_env(eval_envs=eval_envs, env_i=int(env_i))
+        finally:
+            self._close_eval_debug_plot(plot_ctx)
 
-        # Step 3: rollout一个评估episode长度
-        eval_infos = [None for _ in range(n_env)]
-        for eval_step in range(self.eval_episode_length):
-            if bool(np.all(env_finished)):
-                break
-
-            if use_batched_single_env_step:
-                for batch_env_ids in eval_env_batches:
-                    active_batch_ids = [int(i) for i in batch_env_ids if not bool(env_finished[int(i)])]
-                    if len(active_batch_ids) == 0:
-                        continue
-
-                    batch_size_cur = int(len(active_batch_ids))
-                    eval_actions_env = np.zeros((batch_size_cur, eval_num_agents, act_dim), dtype=np.float32)
-
-                    for agent_id in eval_controlled_agents:
-                        role = "target" if (agent_id == eval_target_index and self.target_trainable) else "hunter"
-                        trainer = self.role_trainers[role]
-                        trainer.prep_rollout()
-                        eval_action, next_eval_rnn_state = trainer.policy.act(
-                            np.array(list(eval_obs[active_batch_ids, agent_id])),
-                            eval_rnn_states[agent_id][active_batch_ids],
-                            eval_masks[agent_id][active_batch_ids],
-                            deterministic=True,
-                        )
-                        eval_actions_env[:, agent_id, :] = _t2n(eval_action)
-                        eval_rnn_states[agent_id][active_batch_ids] = _t2n(next_eval_rnn_state)
-
-                    for local_i, env_i in enumerate(active_batch_ids):
-                        env_obs_i, eval_rewards_i, eval_dones_i, eval_infos_i = self._step_single_eval_env(
-                            eval_envs=eval_envs,
-                            env_i=int(env_i),
-                            action_i=np.asarray(eval_actions_env[local_i], dtype=np.float32),
-                            save_gifs=bool(save_gifs),
-                        )
-                        eval_obs[env_i] = env_obs_i
-                        eval_infos[env_i] = eval_infos_i
-
-                        metric_valid = False
-                        metric_angle = float("nan")
-                        if eval_infos_i is not None and len(eval_infos_i) > 0:
-                            env_active_hunter_count[env_i] = int(
-                                self._extract_active_hunter_count(
-                                    eval_infos_i,
-                                    max_hunters_num=eval_num_hunters,
-                                )
-                            )
-                            metric_info = eval_infos_i[eval_target_index]
-                            metric_valid = bool(metric_info.get("max_escape_gap_metric_valid", False))
-                            metric_angle = float(metric_info.get("max_escape_gap_angle", float("nan")))
-
-                        env_episode_rewards[env_i] += float(
-                            np.sum(eval_rewards_i[: eval_num_hunters, 0])
-                            / max(1, eval_num_hunters)
-                        )
-                        if (not env_captured[env_i]) and any(
-                            bool(agent_info.get("captured", False)) for agent_info in eval_infos_i
-                        ):
-                            env_captured[env_i] = True
-                            env_capture_step[env_i] = int(eval_step + 1)
-                            # 仅记录“成功捕捉当下”的escape_gap_angle。
-                            if metric_valid and np.isfinite(metric_angle):
-                                env_capture_escape_gap_angle[env_i] = float(metric_angle)
-
-                        done_env_i = bool(np.all(eval_dones_i))
-                        for agent_id in eval_controlled_agents:
-                            eval_masks[agent_id][env_i, 0] = 0.0 if done_env_i else 1.0
-                            if done_env_i:
-                                eval_rnn_states[agent_id][env_i] = 0.0
-
-                        if done_env_i:
-                            env_alive_rate[env_i] = float(
-                                self._compute_hunter_alive_rate(
-                                    eval_infos_i,
-                                    max_hunters_num=eval_num_hunters,
-                                )
-                            )
-                            if save_gifs and env_i in gif_env_id_set:
-                                terminal_frame = self._extract_terminal_frame(eval_infos_i)
-                                if terminal_frame is not None:
-                                    eval_frames[env_i].append(terminal_frame.copy())
-                                gif_path = out_dir / f"e-{str(bucket)}-{int(episode)}-env-{int(env_i)}.gif"
-                                self._save_gif(
-                                    eval_frames.get(env_i, []),
-                                    gif_path,
-                                    episode_id=int(episode),
-                                    capture_step=None if env_capture_step[env_i] <= 0 else int(env_capture_step[env_i]),
-                                    alive_rate=float(env_alive_rate[env_i]),
-                                )
-                                eval_frames.pop(env_i, None)
-                            env_finished[env_i] = True
-                        elif save_gifs and (eval_step + 1) % self.gif_frame_interval == 0 and env_i in gif_env_id_set:
-                            frame = eval_envs.render(
-                                mode="rgb_array",
-                                env_id=int(env_i),
-                                title=f"Eval({str(bucket)}) Episode {int(episode)}",
-                            )
-                            if isinstance(frame, np.ndarray):
-                                eval_frames[env_i].append(frame.copy())
-            else:
-                eval_actions_env = np.zeros((n_env, eval_num_agents, act_dim), dtype=np.float32)
-                active_env_ids = np.where(np.logical_not(env_finished))[0].astype(np.int32).tolist()
-                if len(active_env_ids) == 0:
-                    break
-
-                for batch_env_ids in eval_env_batches:
-                    active_batch_ids = [int(i) for i in batch_env_ids if int(i) in active_env_ids]
-                    if len(active_batch_ids) == 0:
-                        continue
-                    for agent_id in eval_controlled_agents:
-                        role = "target" if (agent_id == eval_target_index and self.target_trainable) else "hunter"
-                        trainer = self.role_trainers[role]
-                        trainer.prep_rollout()
-                        eval_action, next_eval_rnn_state = trainer.policy.act(
-                            np.array(list(eval_obs[active_batch_ids, agent_id])),
-                            eval_rnn_states[agent_id][active_batch_ids],
-                            eval_masks[agent_id][active_batch_ids],
-                            deterministic=True,
-                        )
-                        eval_actions_env[active_batch_ids, agent_id, :] = _t2n(eval_action)
-                        eval_rnn_states[agent_id][active_batch_ids] = _t2n(next_eval_rnn_state)
-
-                eval_obs, eval_rewards, eval_dones, eval_infos = eval_envs.step(eval_actions_env)
-
-                for env_i in active_env_ids:
-                    metric_valid = False
-                    metric_angle = float("nan")
-                    if eval_infos[env_i] is not None and len(eval_infos[env_i]) > 0:
-                        env_active_hunter_count[env_i] = int(
-                            self._extract_active_hunter_count(
-                                eval_infos[env_i],
-                                max_hunters_num=eval_num_hunters,
-                            )
-                        )
-                        metric_info = eval_infos[env_i][eval_target_index]
-                        metric_valid = bool(metric_info.get("max_escape_gap_metric_valid", False))
-                        metric_angle = float(metric_info.get("max_escape_gap_angle", float("nan")))
-
-                    env_episode_rewards[env_i] += float(
-                        np.sum(eval_rewards[env_i, : eval_num_hunters, 0])
-                        / max(1, eval_num_hunters)
-                    )
-                    if (not env_captured[env_i]) and any(
-                        bool(agent_info.get("captured", False)) for agent_info in eval_infos[env_i]
-                    ):
-                        env_captured[env_i] = True
-                        env_capture_step[env_i] = int(eval_step + 1)
-                        if metric_valid and np.isfinite(metric_angle):
-                            env_capture_escape_gap_angle[env_i] = float(metric_angle)
-
-                    if bool(np.all(eval_dones[env_i])):
-                        env_alive_rate[env_i] = float(
-                            self._compute_hunter_alive_rate(
-                                eval_infos[env_i],
-                                max_hunters_num=eval_num_hunters,
-                            )
-                        )
-                        if save_gifs and env_i in gif_env_id_set:
-                            terminal_frame = self._extract_terminal_frame(eval_infos[env_i])
-                            if terminal_frame is not None:
-                                eval_frames[env_i].append(terminal_frame.copy())
-                            gif_path = out_dir / f"e-{str(bucket)}-{int(episode)}-env-{int(env_i)}.gif"
-                            self._save_gif(
-                                eval_frames.get(env_i, []),
-                                gif_path,
-                                episode_id=int(episode),
-                                capture_step=None if env_capture_step[env_i] <= 0 else int(env_capture_step[env_i]),
-                                alive_rate=float(env_alive_rate[env_i]),
-                            )
-                            eval_frames.pop(env_i, None)
-                        env_finished[env_i] = True
-
-                if save_gifs and (eval_step + 1) % self.gif_frame_interval == 0:
-                    for env_i in gif_env_ids:
-                        if env_finished[env_i]:
-                            continue
-                        frame = eval_envs.render(
-                            mode="rgb_array",
-                            env_id=int(env_i),
-                            title=f"Eval({str(bucket)}) Episode {int(episode)}",
-                        )
-                        if isinstance(frame, np.ndarray):
-                            eval_frames[env_i].append(frame.copy())
-
-                for agent_id in eval_controlled_agents:
-                    done_mask = eval_dones[:, agent_id].astype(bool)
-                    eval_masks[agent_id] = np.ones((n_env, 1), dtype=np.float32)
-                    eval_masks[agent_id][done_mask] = 0.0
-                    eval_rnn_states[agent_id][done_mask] = 0.0
-
-        # Step 3.1: 对未结束环境做alive_rate回填，避免日志或GIF头信息缺失。
-        for env_i in range(n_env):
-            if bool(env_finished[env_i]):
-                continue
-            if eval_infos[env_i] is None or len(eval_infos[env_i]) == 0:
-                continue
-            env_alive_rate[env_i] = float(
-                self._compute_hunter_alive_rate(
-                    eval_infos[env_i],
-                    max_hunters_num=eval_num_hunters,
-                )
-            )
-
-        # Step 4: 汇总评估指标
+        # Step 3: 汇总评估指标
         total_eval_episodes = int(n_env)
         captured_episodes = int(np.sum(env_captured))
         capture_rate = float(captured_episodes / max(1, total_eval_episodes))
@@ -1543,7 +1330,7 @@ class RoleBasedRunner(object):
             },
         )
 
-        # Step 5: 记录TB与CSV（可选）
+        # Step 4: 记录TB与CSV（可选）
         if record_logs:
             self.writter.add_scalars(
                 f"eval/{str(bucket)}/eval_reward",
@@ -1598,26 +1385,16 @@ class RoleBasedRunner(object):
                     total_eval_episodes=int(grouped_metrics["total_eval_episodes"]),
                 )
 
-        # Step 6: 保存每个eval_env GIF（可选）
+        # Step 5: GIF在eval_one_env内逐环境即时写出；这里仅打印摘要。
         if save_gifs:
-            for env_i in gif_env_ids:
-                if env_i not in eval_frames:
-                    continue
-                gif_path = out_dir / f"e-{str(bucket)}-{int(episode)}-env-{int(env_i)}.gif"
-                self._save_gif(
-                    eval_frames.get(env_i, []),
-                    gif_path,
-                    episode_id=int(episode),
-                    capture_step=None if env_capture_step[env_i] <= 0 else int(env_capture_step[env_i]),
-                    alive_rate=float(env_alive_rate[env_i]),
-                )
-                eval_frames.pop(env_i, None)
+            out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
             self._print_timed(
                 "[GIF] saved eval({}) gifs for episode {} to {} ({} envs)".format(
                     str(bucket), int(episode), str(out_dir), int(len(gif_env_ids))
                 )
             )
-        # Step 7: 始终保存“按hunter数量分桶”曲线图，不受log_gif控制。
+
+        # Step 6: 始终保存“按hunter数量分桶”曲线图，不受log_gif控制。
         out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         self._update_eval_hunter_bucket_plot(
@@ -1627,78 +1404,414 @@ class RoleBasedRunner(object):
             eval_metrics_by_hunters=eval_metrics_by_hunters,
             output_dir=out_dir,
         )
-        if hasattr(eval_envs, "capture_terminal_frame"):
-            eval_envs.capture_terminal_frame = False
 
         return eval_metrics
 
-    def _build_eval_env_batches(self, eval_envs, n_env, eval_batch_size, batch_by_hunter_count):
+    @torch.no_grad()
+    def eval_one_env(
+        self,
+        eval_envs,
+        env_i,
+        episode,
+        bucket,
+        save_gif=False,
+        gif_output_dir=None,
+        plot_ctx=None,
+    ):
         """
         功能:
-            构建eval环境批次索引列表，可按num_hunters分组后再切批。
-        输入:
-            eval_envs (VecEnv): 评估环境向量封装。
-            n_env (int): 环境总数。
-            eval_batch_size (int): 每批环境上限（<=0视为全部）。
-            batch_by_hunter_count (bool): 是否按任务num_hunters先分组。
-        输出:
-            list[list[int]]: 环境索引批次列表。
-        """
-        # Step 1: 归一batch size并创建默认顺序索引。
-        batch_size = int(max(1, int(eval_batch_size))) if int(eval_batch_size) > 0 else int(max(1, int(n_env)))
-        all_ids = [int(i) for i in range(int(n_env))]
-        if len(all_ids) == 0:
-            return []
-
-        # Step 2: 可选按task spec里的num_hunters分组，保证同hunter规模优先同批评估。
-        groups = []
-        if bool(batch_by_hunter_count) and hasattr(eval_envs, "auto_reset_task_specs"):
-            task_specs = getattr(eval_envs, "auto_reset_task_specs")
-            if isinstance(task_specs, list) and len(task_specs) >= int(n_env):
-                grouped = {}
-                for env_i in all_ids:
-                    spec_i = task_specs[env_i]
-                    num_hunters_i = int(spec_i.get("num_hunters", -1)) if isinstance(spec_i, dict) else -1
-                    grouped.setdefault(num_hunters_i, []).append(int(env_i))
-                for hunters in sorted(grouped.keys()):
-                    groups.append(grouped[hunters])
-
-        # Step 3: 未分组成功时回退为单一顺序分组。
-        if len(groups) == 0:
-            groups = [all_ids]
-
-        # Step 4: 对每个分组按batch_size切片。
-        batches = []
-        for group_ids in groups:
-            for start in range(0, len(group_ids), batch_size):
-                batches.append([int(x) for x in group_ids[start : start + batch_size]])
-        return batches
-
-    def _step_single_eval_env(self, eval_envs, env_i, action_i, save_gifs):
-        """
-        功能:
-            对DummyVecEnv中的单个子环境执行一步，并在终止时按需注入terminal_frame。
+            对单个fixed eval环境执行完整评估episode，返回该环境指标并可选保存GIF。
         输入:
             eval_envs (DummyVecEnv): 评估环境向量封装。
             env_i (int): 子环境索引。
-            action_i (np.ndarray): 单环境动作，形状=(num_agents, act_dim)。
-            save_gifs (bool): 是否需要terminal_frame注入。
+            episode (int): 当前训练episode编号（用于GIF命名/标题）。
+            bucket (str): 评估桶名称。
+            save_gif (bool): 是否保存该环境GIF。
+            gif_output_dir (str | Path | None): GIF输出目录。
+            plot_ctx (dict | None): 跨环境复用的调试绘图上下文。
         输出:
-            tuple: (obs_i, rewards_i, dones_i, infos_i) 单环境step结果。
+            dict: 单环境评估指标字典。
         """
-        # Step 1: 直接调用子环境step，避免推进无关环境。
+        # Step 1: recover重置该环境，确保固定任务可重复。
         env = eval_envs.envs[int(env_i)]
-        obs_i, rewards_i, dones_i, infos_i = env.step(action_i)
+        task_spec_i = None
+        if hasattr(eval_envs, "auto_reset_task_specs"):
+            task_specs = getattr(eval_envs, "auto_reset_task_specs")
+            if isinstance(task_specs, list) and int(env_i) < len(task_specs):
+                task_spec_i = task_specs[int(env_i)]
+        obs = env.reset(mode="recover", task_spec=task_spec_i)
 
-        # Step 2: done时按需补写terminal_frame，保持与DummyVecEnv.step_wait语义一致。
-        done_env = bool(np.all(dones_i))
-        if done_env and bool(save_gifs):
-            terminal_frame = env.render(mode="rgb_array")
-            if isinstance(infos_i, (list, tuple)):
-                for agent_info in infos_i:
-                    if isinstance(agent_info, dict):
-                        agent_info["terminal_frame"] = terminal_frame
-        return obs_i, rewards_i, dones_i, infos_i
+        num_agents = int(obs.shape[0])
+        num_hunters = int(max(1, num_agents - 1))
+        target_index = int(num_agents - 1)
+        act_dim = int(eval_envs.action_space[0].shape[0])
+
+        controlled_agents = list(range(num_hunters))
+        if self.target_trainable:
+            controlled_agents.append(target_index)
+        active_hunter_ids = list(range(num_hunters))
+        if hasattr(env, "active_hunter_mask"):
+            mask = np.asarray(getattr(env, "active_hunter_mask"), dtype=bool).reshape(-1)
+            active_hunter_ids = [int(i) for i in range(min(int(num_hunters), int(mask.shape[0]))) if bool(mask[i])]
+            if len(active_hunter_ids) == 0:
+                active_hunter_ids = list(range(num_hunters))
+
+        eval_rnn_states = {
+            aid: np.zeros((1, self.recurrent_N, self.hidden_size), dtype=np.float32)
+            for aid in controlled_agents
+        }
+        eval_masks = {
+            aid: np.ones((1, 1), dtype=np.float32)
+            for aid in controlled_agents
+        }
+
+        frames = []
+        if save_gif:
+            frame0 = env.render(
+                mode="rgb_array",
+                title=f"Eval({str(bucket)}) Episode {int(episode)}",
+            )
+            if isinstance(frame0, np.ndarray):
+                frames.append(frame0.copy())
+
+        episode_reward = 0.0
+        captured = False
+        capture_step = -1
+        alive_rate = 0.0
+        active_hunter_count = int(num_hunters)
+        capture_escape_gap_angle = float("nan")
+        last_infos = None
+        hunter_cum_rewards = np.zeros(num_hunters, dtype=np.float32)
+        hunter_cum_reward_history = [[] for _ in range(num_hunters)]
+        max_escape_gap_history = []
+        active_hunter_history = []
+        if self.eval_step_plot and plot_ctx is not None:
+            self._prepare_eval_debug_plot_env(
+                plot_ctx=plot_ctx,
+                env_i=int(env_i),
+                episode=int(episode),
+                bucket=str(bucket),
+                active_hunter_ids=active_hunter_ids,
+            )
+
+        # Step 2: rollout单环境episode。
+        for eval_step in range(self.eval_episode_length):
+            actions_env = np.zeros((num_agents, act_dim), dtype=np.float32)
+            for agent_id in controlled_agents:
+                role = "target" if (agent_id == target_index and self.target_trainable) else "hunter"
+                trainer = self.role_trainers[role]
+                trainer.prep_rollout()
+                eval_action, next_eval_rnn_state = trainer.policy.act(
+                    np.expand_dims(obs[agent_id], axis=0),
+                    eval_rnn_states[agent_id],
+                    eval_masks[agent_id],
+                    deterministic=True,
+                )
+                actions_env[agent_id, :] = _t2n(eval_action)[0]
+                eval_rnn_states[agent_id] = _t2n(next_eval_rnn_state)
+
+            next_obs, rewards, dones, infos = env.step(actions_env)
+            infos = infos if infos is not None else []
+            last_infos = infos
+
+            metric_info = infos[target_index] if target_index < len(infos) else {}
+            metric_valid = bool(metric_info.get("max_escape_gap_metric_valid", False))
+            metric_angle = float(metric_info.get("max_escape_gap_angle", float("nan")))
+
+            if len(infos) > 0:
+                active_hunter_count = int(
+                    self._extract_active_hunter_count(
+                        infos,
+                        max_hunters_num=num_hunters,
+                    )
+                )
+
+            hunter_step_rewards = rewards[:num_hunters, 0].astype(np.float32)
+            hunter_cum_rewards += hunter_step_rewards
+            episode_reward += float(np.sum(hunter_step_rewards) / max(1, num_hunters))
+            for hid in range(num_hunters):
+                hunter_cum_reward_history[hid].append(float(hunter_cum_rewards[hid]))
+            max_escape_gap_history.append(float(metric_angle) if metric_valid else float("nan"))
+            active_hunter_history.append(float(active_hunter_count))
+
+            if self.eval_step_render:
+                env.render(mode="human")
+                if hasattr(self.flat_args, "ifi"):
+                    time.sleep(max(0.0, float(self.flat_args.ifi)))
+
+            if self.eval_step_plot:
+                self._update_eval_debug_plot(
+                    plot_ctx=plot_ctx,
+                    step_idx=int(eval_step + 1),
+                    hunter_cum_reward_history=[list(x) for x in hunter_cum_reward_history],
+                    active_hunter_ids=active_hunter_ids,
+                    max_escape_gap_history=list(max_escape_gap_history),
+                    active_hunter_history=list(active_hunter_history),
+                )
+
+            if (not captured) and any(bool(agent_info.get("captured", False)) for agent_info in infos):
+                captured = True
+                capture_step = int(eval_step + 1)
+                if metric_valid and np.isfinite(metric_angle):
+                    capture_escape_gap_angle = float(metric_angle)
+
+            done_env = bool(np.all(dones))
+            for agent_id in controlled_agents:
+                done_agent = bool(dones[agent_id])
+                eval_masks[agent_id][0, 0] = 0.0 if done_agent else 1.0
+                if done_agent:
+                    eval_rnn_states[agent_id][0] = 0.0
+
+            if done_env:
+                alive_rate = float(
+                    self._compute_hunter_alive_rate(
+                        infos,
+                        max_hunters_num=num_hunters,
+                    )
+                )
+                if save_gif:
+                    terminal_frame = self._extract_terminal_frame(infos)
+                    if terminal_frame is None:
+                        terminal_frame = env.render(mode="rgb_array")
+                    if isinstance(terminal_frame, np.ndarray):
+                        frames.append(terminal_frame.copy())
+                break
+
+            if save_gif and (eval_step + 1) % self.gif_frame_interval == 0:
+                frame = env.render(
+                    mode="rgb_array",
+                    title=f"Eval({str(bucket)}) Episode {int(episode)}",
+                )
+                if isinstance(frame, np.ndarray):
+                    frames.append(frame.copy())
+            obs = next_obs
+
+        # Step 3: 对未done环境补alive统计。
+        if (last_infos is not None) and (len(last_infos) > 0) and float(alive_rate) <= 0.0:
+            alive_rate = float(
+                self._compute_hunter_alive_rate(
+                    last_infos,
+                    max_hunters_num=num_hunters,
+                )
+            )
+
+        # Step 4: 单环境GIF落盘。
+        if save_gif:
+            out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            gif_path = out_dir / f"e-{str(bucket)}-{int(episode)}-env-{int(env_i)}.gif"
+            self._save_gif(
+                frames,
+                gif_path,
+                episode_id=int(episode),
+                capture_step=None if int(capture_step) <= 0 else int(capture_step),
+                alive_rate=float(alive_rate),
+            )
+
+        return {
+            "episode_reward": float(episode_reward),
+            "captured": bool(captured),
+            "capture_step": int(capture_step),
+            "alive_rate": float(alive_rate),
+            "active_hunter_count": int(active_hunter_count),
+            "capture_escape_gap_angle": float(capture_escape_gap_angle),
+        }
+
+    def _init_eval_debug_plot(self, env_i, episode, bucket, num_hunters):
+        """
+        功能:
+            初始化单环境eval实时调试图窗口（累计reward、escape gap、active hunters）。
+        输入:
+            env_i (int): 当前子环境索引。
+            episode (int): 当前episode编号。
+            bucket (str): 评估桶名称。
+            num_hunters (int): 当前环境有效hunter数量。
+        输出:
+            dict | None: plot上下文；若未启用或初始化失败则返回None。
+        """
+        if not bool(self.eval_step_plot):
+            return None
+        try:
+            plt.ion()
+            fig, axes = plt.subplots(3, 1, figsize=(9.0, 9.5), dpi=110)
+            if not isinstance(axes, np.ndarray):
+                axes = np.array([axes], dtype=object)
+            reward_ax, gap_ax, active_ax = axes.tolist()
+            reward_lines = []
+            for hid in range(int(num_hunters)):
+                (line,) = reward_ax.plot([], [], linewidth=1.8, label=f"h{int(hid)}")
+                reward_lines.append(line)
+            reward_ax.set_title(f"Eval Debug | {str(bucket)} | Ep {int(episode)} | Env {int(env_i)}")
+            reward_ax.set_ylabel("Cum Reward")
+            reward_ax.grid(True, alpha=0.25)
+            if int(num_hunters) <= 10:
+                reward_ax.legend(loc="upper left", ncol=2, fontsize=8)
+
+            (gap_line,) = gap_ax.plot([], [], color="#d62728", linewidth=1.8)
+            gap_ax.set_ylabel("Max Escape Gap")
+            gap_ax.grid(True, alpha=0.25)
+
+            (active_line,) = active_ax.plot([], [], color="#1f77b4", linewidth=1.8)
+            active_ax.set_ylabel("Active Hunters")
+            active_ax.set_xlabel("Step")
+            active_ax.grid(True, alpha=0.25)
+
+            fig.tight_layout()
+            fig.canvas.draw_idle()
+            plt.pause(0.001)
+            return {
+                "fig": fig,
+                "reward_ax": reward_ax,
+                "gap_ax": gap_ax,
+                "active_ax": active_ax,
+                "reward_lines": reward_lines,
+                "gap_line": gap_line,
+                "active_line": active_line,
+            }
+        except Exception as e:
+            print(f"[EvalPlot] init failed, disable step plot for this run: {str(e)}")
+            self.eval_step_plot = False
+            return None
+
+    def _update_eval_debug_plot(
+        self,
+        plot_ctx,
+        step_idx,
+        hunter_cum_reward_history,
+        active_hunter_ids,
+        max_escape_gap_history,
+        active_hunter_history,
+    ):
+        """
+        功能:
+            更新单环境eval实时调试图中的曲线数据并刷新窗口。
+        输入:
+            plot_ctx (dict | None): plot上下文。
+            step_idx (int): 当前步数（从1开始）。
+            hunter_cum_reward_history (list[list[float]]): 每个hunter的累计reward历史曲线。
+            active_hunter_ids (list[int]): 当前环境激活hunter槽位索引。
+            max_escape_gap_history (list[float]): 各step的max_escape_gap_angle历史。
+            active_hunter_history (list[float]): 各step的active_hunter_count历史。
+        输出:
+            无。
+        """
+        if plot_ctx is None:
+            return
+        try:
+            x = np.arange(1, int(step_idx) + 1, dtype=np.int32)
+            shown_hunter_ids = plot_ctx.get("active_hunter_ids", list(active_hunter_ids))
+            for line_i, line in enumerate(plot_ctx["reward_lines"]):
+                hid = int(shown_hunter_ids[line_i]) if line_i < len(shown_hunter_ids) else int(line_i)
+                y = np.asarray(hunter_cum_reward_history[int(hid)], dtype=np.float32)
+                line.set_data(x, y)
+            gap_hist = np.asarray(max_escape_gap_history, dtype=np.float32)
+            plot_ctx["gap_line"].set_data(x, gap_hist)
+            active_hist = np.asarray(active_hunter_history, dtype=np.float32)
+            plot_ctx["active_line"].set_data(x, active_hist)
+
+            for key_ax in ("reward_ax", "gap_ax", "active_ax"):
+                ax = plot_ctx[key_ax]
+                ax.relim()
+                ax.autoscale_view()
+
+            plot_ctx["fig"].canvas.draw_idle()
+            plt.pause(0.001)
+        except Exception:
+            return
+
+    def _prepare_eval_debug_plot_env(self, plot_ctx, env_i, episode, bucket, active_hunter_ids):
+        """
+        功能:
+            在复用plot窗口时，切换到指定env并按激活hunter重建曲线。
+        输入:
+            plot_ctx (dict | None): plot上下文。
+            env_i (int): 当前子环境索引。
+            episode (int): 当前episode编号。
+            bucket (str): 评估桶名称。
+            active_hunter_ids (list[int]): 当前环境激活hunter槽位索引。
+        输出:
+            无。
+        """
+        if plot_ctx is None:
+            return
+        try:
+            reward_ax = plot_ctx["reward_ax"]
+            gap_ax = plot_ctx["gap_ax"]
+            active_ax = plot_ctx["active_ax"]
+
+            reward_ax.cla()
+            reward_lines = []
+            for hid in list(active_hunter_ids):
+                (line,) = reward_ax.plot([], [], linewidth=1.8, label=f"h{int(hid)}")
+                reward_lines.append(line)
+            reward_ax.set_title(
+                f"Eval Debug | {str(bucket)} | Ep {int(episode)} | Env {int(env_i)}"
+            )
+            reward_ax.set_ylabel("Cum Reward")
+            reward_ax.grid(True, alpha=0.25)
+            if len(active_hunter_ids) <= 10:
+                reward_ax.legend(loc="upper left", ncol=2, fontsize=8)
+
+            gap_ax.cla()
+            (gap_line,) = gap_ax.plot([], [], color="#d62728", linewidth=1.8)
+            gap_ax.set_ylabel("Max Escape Gap")
+            gap_ax.grid(True, alpha=0.25)
+
+            active_ax.cla()
+            (active_line,) = active_ax.plot([], [], color="#1f77b4", linewidth=1.8)
+            active_ax.set_ylabel("Active Hunters")
+            active_ax.set_xlabel("Step")
+            active_ax.grid(True, alpha=0.25)
+
+            plot_ctx["reward_lines"] = reward_lines
+            plot_ctx["gap_line"] = gap_line
+            plot_ctx["active_line"] = active_line
+            plot_ctx["active_hunter_ids"] = [int(x) for x in active_hunter_ids]
+            for key_ax in ("reward_ax", "gap_ax", "active_ax"):
+                ax = plot_ctx[key_ax]
+                ax.relim()
+                ax.autoscale_view()
+            plot_ctx["fig"].tight_layout()
+            plot_ctx["fig"].canvas.draw_idle()
+            plt.pause(0.001)
+        except Exception:
+            return
+
+    def _close_eval_debug_plot(self, plot_ctx):
+        """
+        功能:
+            关闭单环境eval实时调试图窗口，释放绘图资源。
+        输入:
+            plot_ctx (dict | None): plot上下文。
+        输出:
+            无。
+        """
+        if plot_ctx is None:
+            return
+        try:
+            fig = plot_ctx.get("fig")
+            if fig is not None:
+                plt.close(fig)
+        except Exception:
+            return
+
+    def _reset_single_eval_env(self, eval_envs, env_i):
+        """
+        功能:
+            在串行评估中，将指定子环境recover重置到固定任务初态。
+        输入:
+            eval_envs (DummyVecEnv): 评估环境向量封装。
+            env_i (int): 子环境索引。
+        输出:
+            无。
+        """
+        env = eval_envs.envs[int(env_i)]
+        task_spec_i = None
+        if hasattr(eval_envs, "auto_reset_task_specs"):
+            task_specs = getattr(eval_envs, "auto_reset_task_specs")
+            if isinstance(task_specs, list) and int(env_i) < len(task_specs):
+                task_spec_i = task_specs[int(env_i)]
+        env.reset(mode="recover", task_spec=task_spec_i)
 
     def _save_gif(self, frames, gif_path, episode_id=None, capture_step=None, alive_rate=None):
         """
@@ -2177,7 +2290,7 @@ class RoleBasedRunner(object):
             "capture_rate": "Capture Rate",
             "capture_steps": "Capture Steps",
             "alive_rate": "Alive Rate",
-            "max_escape_gap_angle": "Max Potential Escape Gap Angle",
+            "max_escape_gap_angle": "Max Potential Escape Gap Angle (deg)",
         }
         bucket_style = {
             "fixed": {"label": "fixed", "color": "#1f77b4", "marker": "o"},
@@ -2203,8 +2316,12 @@ class RoleBasedRunner(object):
                 y_vals = []
                 for hc in x_vals:
                     metric_val = float(grouped[int(hc)].get(metric_name, float("nan")))
-                    if metric_name == "max_escape_gap_angle" and (not np.isfinite(metric_val)):
-                        metric_val = 360.0
+                    if metric_name == "max_escape_gap_angle":
+                        # 统一将弧度制指标转换为角度（度）后绘图。
+                        if np.isfinite(metric_val):
+                            metric_val = float(np.degrees(metric_val))
+                        else:
+                            metric_val = 360.0
                     y_vals.append(float(metric_val))
                 x_ticks.update(x_vals)
                 style = bucket_style[bucket_name]

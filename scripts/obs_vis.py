@@ -334,7 +334,25 @@ class ObsVisApp:
         info_frame = tk.LabelFrame(right, text="Selected Agent Debug", padx=6, pady=6)
         info_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.info_var = tk.StringVar(value="")
-        tk.Label(info_frame, textvariable=self.info_var, justify=tk.LEFT, anchor="w").pack(fill=tk.X)
+        self.escape_info_var = tk.StringVar(value="")
+        info_tabs = ttk.Notebook(info_frame)
+        info_tabs.pack(fill=tk.X)
+        info_tab_debug = tk.Frame(info_tabs)
+        info_tab_escape = tk.Frame(info_tabs)
+        info_tabs.add(info_tab_debug, text="Debug")
+        info_tabs.add(info_tab_escape, text="Escape")
+        tk.Label(
+            info_tab_debug,
+            textvariable=self.info_var,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            info_tab_escape,
+            textvariable=self.escape_info_var,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(fill=tk.X)
         self.obs_text = tk.Text(info_frame, height=10, width=44, wrap=tk.WORD)
         self.obs_text.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self._on_view_height_change()
@@ -623,6 +641,7 @@ class ObsVisApp:
         self.obs_text.delete("1.0", tk.END)
         if self.core_env is None or self.selected_index is None:
             self.info_var.set("No selected agent.")
+            self.escape_info_var.set("No selected agent.")
             return
 
         agent = self.core_env.agents[self.selected_index]
@@ -646,10 +665,28 @@ class ObsVisApp:
                 reward_map[key] = 0.0
 
         reward_lines = []
+        escape_reward_lines = []
         for key in reward_keys:
             short_name = key.replace("reward_", "")
-            reward_lines.append(f"Reward {short_name}: {reward_map[key]:.4f}")
+            line = f"Reward {short_name}: {reward_map[key]:.4f}"
+            if self._is_escape_debug_key(short_name):
+                escape_reward_lines.append(line)
+            else:
+                reward_lines.append(line)
         reward_text = "\n".join(reward_lines) if reward_lines else "Reward: no step data"
+        escape_reward_text = "\n".join(escape_reward_lines) if escape_reward_lines else "Escape reward: no step data"
+
+        escape_lines = [
+            f"max_escape_gap_angle: {float(getattr(self.core_env.target, 'max_escape_gap_angle', 0.0)):.4f}",
+            f"max_escape_gap_center_angle: {float(getattr(self.core_env.target, 'max_escape_gap_center_angle', 0.0)):.4f}",
+            f"max_escape_gap_metric_valid: {bool(getattr(self.core_env.target, 'escape_gap_metric_valid', False))}",
+            f"escape_gap_encircle_score: {float(getattr(self.core_env.target, 'last_escape_gap_encircle_score', 0.0)):.4f}",
+            f"escape_gap_open_score: {float(getattr(self.core_env.target, 'last_escape_gap_open_score', 0.0)):.4f}",
+            f"escape_gap_hunter_direction_score: {float(getattr(self.core_env.target, 'last_escape_gap_hunter_direction_score', 0.0)):.4f}",
+            f"escape_gap_target_direction_score: {float(getattr(self.core_env.target, 'last_escape_gap_target_direction_score', 0.0)):.4f}",
+            f"encircling_hunter_ids: {list(getattr(self.core_env.target, 'last_encircling_hunter_ids', []))}",
+        ]
+        escape_text = "\n".join([escape_reward_text] + escape_lines)
 
         info = (
             f"Role: {agent.role}[{agent.agent_id}]   Alive: {agent.alive}\n"
@@ -663,10 +700,15 @@ class ObsVisApp:
             f"obs_dim: {len(self.obs_cache[self.selected_index]) if self.obs_cache else 0}"
         )
         self.info_var.set(info)
+        self.escape_info_var.set(escape_text)
 
         if self.obs_cache:
             obs = self.obs_cache[self.selected_index]
             self.obs_text.insert(tk.END, self._format_obs_vector(self.selected_index, obs))
+
+    def _is_escape_debug_key(self, short_name: str) -> bool:
+        key = str(short_name).lower()
+        return ("escape" in key) or ("gap" in key)
 
     def _refresh_obs_two_line(self) -> None:
         if self.core_env is None or self.selected_index is None or not self.obs_cache:
