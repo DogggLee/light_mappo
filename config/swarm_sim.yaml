@@ -4,7 +4,7 @@ swarm_sim:
     dt: 0.1
     max_steps: 3000
     hunters: 30
-    explorers: 5
+    explorers: 10
     targets: 5
     overlap_rate: 0.2
     hunters_wait_mode: split  # Choices: [split, zone]

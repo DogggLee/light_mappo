@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 
 project_root = Path(__file__).resolve().parents[1]
 project_root_str = str(project_root)
@@ -111,6 +112,7 @@ class HunterRuntime:
     resume_pos: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
     total_endurance: float = 12000.0
     remaining_endurance: float = 12000.0
+    pursuit_traj_start: int = -1
 
 
 @dataclass
@@ -138,6 +140,7 @@ class TargetRuntime:
     last_seen_pos: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
     last_seen_vel: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
     policy_type: str = "random"
+    seen_streak: int = 0
 
 
 @dataclass
@@ -157,6 +160,9 @@ class MissionConfig:
     hunters: int = 6
     explorers: int = 3
     targets: int = 5
+    explorer_max_speed: float = 1.0
+    hunter_max_speed: float = 1.0
+    target_max_speed: float = 1.0
     overlap_rate: float = 0.2
     hunters_wait_mode: str = "split"
     explorer_track_speed_scale: float = 1.2
@@ -368,6 +374,124 @@ class LearnTargetActor:
         return np.clip(action, -1.0, 1.0)
 
 
+class LearnHunterActor:
+    """
+    功能:
+        可选learn-hunter actor封装；无模型时自动回退None。
+    输入:
+        cfg (EasyDict): 合并配置。
+        actor_path (Optional[str]): actor权重路径。
+    输出:
+        无。
+    """
+
+    def __init__(self, cfg, actor_path: Optional[str]):
+        self.cfg = cfg
+        self.actor_path = actor_path
+        self.enabled = False
+        self.policy = None
+        self.recurrent_N = 1
+        self.hidden_size = 1
+        self.rnn_states: Dict[int, np.ndarray] = {}
+
+        if actor_path is None:
+            return
+        if RMAPPOPolicy is None or torch is None:
+            return
+
+    def _build_flat_args_from_cfg(self, merged_cfg):
+        """
+        功能:
+            将分层配置映射为策略初始化所需扁平参数。
+        输入:
+            merged_cfg (EasyDict): 合并配置。
+        输出:
+            argparse.Namespace: 算法参数。
+        """
+        from runner.uav.role_runner import RoleBasedRunner
+
+        class _Dummy(object):
+            pass
+
+        dummy = _Dummy()
+        dummy.cfg = merged_cfg
+        return RoleBasedRunner._build_flat_args_for_algorithm(dummy)
+
+    def _ensure_policy(self, obs_dim: int):
+        """
+        功能:
+            按obs_dim初始化策略并加载权重。
+        输入:
+            obs_dim (int): 观测维度。
+        输出:
+            无。
+        """
+        if self.enabled or self.policy is not None:
+            return
+        if self.actor_path is None or RMAPPOPolicy is None or torch is None:
+            return
+        try:
+            flat_args = self._build_flat_args_from_cfg(self.cfg)
+            from gymnasium import spaces
+
+            obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(int(obs_dim),), dtype=np.float32)
+            act_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.policy = RMAPPOPolicy(flat_args, obs_space, obs_space, act_space, device=device)
+            ckpt = torch.load(str(self.actor_path), map_location=device)
+            self.policy.actor.load_state_dict(ckpt)
+            self.policy.actor.eval()
+            self.recurrent_N = int(flat_args.recurrent_N)
+            self.hidden_size = int(flat_args.hidden_size)
+            self.enabled = True
+        except Exception:
+            self.enabled = False
+            self.policy = None
+
+    def reset_hunter(self, hunter_id: int):
+        """
+        功能:
+            重置指定Hunter的RNN状态。
+        输入:
+            hunter_id (int): Hunter ID。
+        输出:
+            无。
+        """
+        if not self.enabled:
+            return
+        self.rnn_states[int(hunter_id)] = np.zeros(
+            (1, self.recurrent_N, self.hidden_size), dtype=np.float32
+        )
+
+    def act(self, hunter_id: int, obs: np.ndarray) -> Optional[np.ndarray]:
+        """
+        功能:
+            对learn-hunter执行一次策略前向推理。
+        输入:
+            hunter_id (int): Hunter ID。
+            obs (np.ndarray): shape=(obs_dim,)。
+        输出:
+            Optional[np.ndarray]: shape=(2,) 归一化动作。
+        """
+        if obs is None:
+            return None
+        if self.policy is None:
+            self._ensure_policy(int(obs.shape[0]))
+        if (not self.enabled) or self.policy is None:
+            return None
+        hid = int(hunter_id)
+        if hid not in self.rnn_states:
+            self.reset_hunter(hid)
+        rnn_state = self.rnn_states[hid]
+        obs_batch = np.asarray(obs, dtype=np.float32)[None, :]
+        masks = np.ones((1, 1), dtype=np.float32)
+        with torch.no_grad():
+            action_t, next_rnn = self.policy.act(obs_batch, rnn_state, masks, deterministic=True)
+        self.rnn_states[hid] = next_rnn.detach().cpu().numpy().astype(np.float32)
+        action = action_t.detach().cpu().numpy().reshape(-1).astype(np.float32)
+        return np.clip(action, -1.0, 1.0)
+
+
 class SwarmSimulationCore:
     """
     功能:
@@ -376,6 +500,7 @@ class SwarmSimulationCore:
         cfg (EasyDict): 合并配置。
         seed (Optional[int]): 随机种子。
         target_actor_path (Optional[str]): learn-target actor路径。
+        hunter_actor_path (Optional[str]): learn-hunter actor路径。
     输出:
         无。
     """
@@ -385,10 +510,13 @@ class SwarmSimulationCore:
         cfg,
         seed: Optional[int] = None,
         target_actor_path: Optional[str] = None,
+        hunter_actor_path: Optional[str] = None,
         sim_overrides: Optional[dict] = None,
     ):
         self.cfg = cfg
-        self.rng = np.random.RandomState(int(cfg.exp.seed if seed is None else seed))
+        self.base_seed = int(cfg.exp.seed if seed is None else seed)
+        self.current_seed = int(self.base_seed)
+        self.rng = np.random.RandomState(int(self.current_seed))
 
         env_cfg = cfg.env
         multi_env_cfg = None
@@ -401,6 +529,9 @@ class SwarmSimulationCore:
             hunters=max(1, int(env_cfg.max_hunters_num)),
             explorers=max(1, int(getattr(multi_env_cfg, "num_explorers", 3)) if multi_env_cfg is not None else 3),
             targets=max(1, int(getattr(multi_env_cfg, "num_targets", 5)) if multi_env_cfg is not None else 5),
+            explorer_max_speed=float(getattr(cfg.Explorer, "max_velo", 1.0)),
+            hunter_max_speed=float(getattr(cfg.Hunter, "max_velo", 1.0)),
+            target_max_speed=float(getattr(cfg.Target, "max_velo", 1.0)),
             overlap_rate=0.2,
             hunters_wait_mode="split",
             explorer_track_speed_scale=1.2,
@@ -417,6 +548,8 @@ class SwarmSimulationCore:
         self.time_step = 0
         self.executing = False
         self.planned = False
+        self.pending_assignment: Optional[List[Tuple[int, int, List[int]]]] = None
+        self.assign_mode: str = "on-loop"
 
         self.explorers: List[ExplorerRuntime] = []
         self.hunters: List[HunterRuntime] = []
@@ -428,6 +561,20 @@ class SwarmSimulationCore:
             route_names=list(env_cfg.target_patrol_names),
         )
         self.target_actor = LearnTargetActor(cfg, target_actor_path, obs_dim=20)
+        self.hunter_actor = LearnHunterActor(cfg, hunter_actor_path) if hunter_actor_path else None
+        self.reset_world()
+
+    def reset_world_with_seed(self, seed: int):
+        """
+        功能:
+            使用指定随机种子重置世界。
+        输入:
+            seed (int): 随机种子。
+        输出:
+            无。
+        """
+        self.current_seed = int(seed)
+        self.rng = np.random.RandomState(int(self.current_seed))
         self.reset_world()
 
     def _apply_sim_overrides(self, sim_overrides: Optional[dict]):
@@ -450,6 +597,15 @@ class SwarmSimulationCore:
             self.mission.hunters = max(1, int(mission_cfg.get("hunters", self.mission.hunters)))
             self.mission.explorers = max(1, int(mission_cfg.get("explorers", self.mission.explorers)))
             self.mission.targets = max(1, int(mission_cfg.get("targets", self.mission.targets)))
+            self.mission.explorer_max_speed = float(
+                mission_cfg.get("explorer_max_speed", self.mission.explorer_max_speed)
+            )
+            self.mission.hunter_max_speed = float(
+                mission_cfg.get("hunter_max_speed", self.mission.hunter_max_speed)
+            )
+            self.mission.target_max_speed = float(
+                mission_cfg.get("target_max_speed", self.mission.target_max_speed)
+            )
             self.mission.overlap_rate = float(mission_cfg.get("overlap_rate", self.mission.overlap_rate))
             self.mission.hunters_wait_mode = str(
                 mission_cfg.get("hunters_wait_mode", self.mission.hunters_wait_mode)
@@ -515,6 +671,7 @@ class SwarmSimulationCore:
         self.time_step = 0
         self.executing = False
         self.planned = False
+        self.pending_assignment = None
 
         self.explorers = []
         self.hunters = []
@@ -527,7 +684,7 @@ class SwarmSimulationCore:
         for idx in range(int(self.mission.explorers)):
             agent = ExplorerAgent(
                 agent_id=idx,
-                max_speed=float(explorer_cfg.max_velo),
+                max_speed=float(self.mission.explorer_max_speed),
                 safe_dis=float(explorer_cfg.safe_dis),
                 control_mode="velocity",
                 max_acc=0.0,
@@ -549,7 +706,7 @@ class SwarmSimulationCore:
         for idx in range(int(self.mission.hunters)):
             agent = HunterAgent(
                 agent_id=idx,
-                max_speed=float(hunter_cfg.max_velo),
+                max_speed=float(self.mission.hunter_max_speed),
                 safe_dis=float(hunter_cfg.safe_dis),
                 control_mode=str(hunter_cfg.control_mode).lower(),
                 max_acc=float(hunter_cfg.max_acc),
@@ -591,7 +748,7 @@ class SwarmSimulationCore:
             patrol_route = self.patrol_routes[idx % len(self.patrol_routes)] if len(self.patrol_routes) > 0 else None
             agent = TargetAgent(
                 agent_id=idx,
-                max_speed=float(target_cfg.max_velo),
+                max_speed=float(self.mission.target_max_speed),
                 safe_dis=float(target_cfg.safe_dis),
                 control_mode=str(target_cfg.control_mode).lower(),
                 max_acc=float(target_cfg.max_acc),
@@ -1002,19 +1159,31 @@ class SwarmSimulationCore:
                 self._sync_subenv_from_global(target_id=tid)
                 runtime.started = True
             actions = np.zeros((env.agent_num, 2), dtype=np.float32)
+            need_obs = False
+            if self.hunter_actor is not None and bool(self.hunter_actor.actor_path):
+                need_obs = True
+            if str(env.target.policy_type).lower() == "learn":
+                need_obs = True
+            obs_all = None
+            if need_obs:
+                team_sees_target = bool(env._team_sees_target())
+                obs_all = env._build_obs(team_sees_target=team_sees_target)
 
             for local_hid, global_hid in enumerate(runtime.hunter_ids):
                 if global_hid < 0 or global_hid >= len(self.hunters):
                     continue
-                chase_action = self._build_hunter_chase_action(
-                    hunter=env.hunters[local_hid],
-                    target_pos=env.target.position,
-                )
-                actions[local_hid] = chase_action
+                action = None
+                if self.hunter_actor is not None and obs_all is not None:
+                    hunter_obs = np.asarray(obs_all[local_hid], dtype=np.float32)
+                    action = self.hunter_actor.act(int(global_hid), hunter_obs)
+                if action is None:
+                    action = self._build_hunter_chase_action(
+                        hunter=env.hunters[local_hid],
+                        target_pos=env.target.position,
+                    )
+                actions[local_hid] = action
 
-            if str(env.target.policy_type).lower() == "learn":
-                team_sees_target = bool(env._team_sees_target())
-                obs_all = env._build_obs(team_sees_target=team_sees_target)
+            if str(env.target.policy_type).lower() == "learn" and obs_all is not None:
                 target_obs = np.asarray(obs_all[env.target_index], dtype=np.float32)
                 actions[env.target_index] = self.target_actor.act(tid, target_obs)
 
@@ -1066,7 +1235,9 @@ class SwarmSimulationCore:
             if not target.alive:
                 continue
             any_seen = False
-            for ex in self.explorers:
+            assigned_seen = False
+            assigned_dist = None
+            for ex_idx, ex in enumerate(self.explorers):
                 dist = float(np.linalg.norm(ex.agent.position - target.agent.position))
                 perc = float(getattr(self.cfg.Explorer, "perception_radius", -1))
                 perc = float(self.mission.world_size * 2.0) if perc <= 0 else perc
@@ -1077,8 +1248,21 @@ class SwarmSimulationCore:
                     target.last_seen_step = int(self.time_step)
                     target.last_seen_pos = target.agent.position.copy()
                     target.last_seen_vel = target.agent.velocity.copy()
-            if any_seen and target.assigned_explorer >= 0:
-                target.pursuit_started = True
+                if int(target.assigned_explorer) >= 0 and int(ex_idx) == int(target.assigned_explorer):
+                    assigned_seen = True
+                    assigned_dist = dist
+            if target.assigned_explorer >= 0:
+                if assigned_seen:
+                    target.seen_streak = int(target.seen_streak) + 1
+                else:
+                    target.seen_streak = 0
+                perc = float(getattr(self.cfg.Explorer, "perception_radius", -1))
+                perc = float(self.mission.world_size * 2.0) if perc <= 0 else perc
+                if assigned_seen and assigned_dist is not None:
+                    if float(assigned_dist) <= float(perc) * 0.8 and int(target.seen_streak) > 5:
+                        if not bool(target.pursuit_started):
+                            self._start_pursuit_for_target(int(tid))
+                        target.pursuit_started = True
 
     def _assignment_if_needed(self):
         """
@@ -1089,21 +1273,41 @@ class SwarmSimulationCore:
         输出:
             无。
         """
+        if self.pending_assignment is not None:
+            return
+        assignments = self._compute_assignment()
+        if len(assignments) == 0:
+            return
+        if str(self.assign_mode).lower() == "in-loop":
+            self.pending_assignment = assignments
+            self.executing = False
+            return
+        self._apply_assignment(assignments)
+
+    def _compute_assignment(self) -> List[Tuple[int, int, List[int]]]:
+        """
+        功能:
+            计算Explorer/Hunter分配方案，不直接下发。
+        输入:
+            无。
+        输出:
+            List[Tuple[int,int,List[int]]]: (explorer_id, target_id, hunter_ids)
+        """
         idle_explorer_ids = [
             idx for idx, ex in enumerate(self.explorers)
-            if ex.state == "SEARCH" and ex.assigned_target < 0 and float(ex.remaining_endurance) > 0.0
+            if float(ex.remaining_endurance) > 0.0
         ]
         idle_hunter_ids = [
             idx
             for idx, h in enumerate(self.hunters)
-            if h.assigned_target < 0 and h.state != "EXHAUSTED" and float(h.remaining_endurance) > 0.0
+            if h.state != "EXHAUSTED" and float(h.remaining_endurance) > 0.0
         ]
         candidate_target_ids = [
             idx for idx, t in enumerate(self.targets)
-            if t.alive and t.in_pool and t.assigned_explorer < 0
+            if t.alive and t.in_pool
         ]
         if len(idle_explorer_ids) == 0 or len(idle_hunter_ids) == 0 or len(candidate_target_ids) == 0:
-            return
+            return []
 
         explorer_cost = self._build_explorer_cost_matrix(idle_explorer_ids, candidate_target_ids)
         explorer_pairs = MinCostMatcher.solve(explorer_cost)
@@ -1122,7 +1326,7 @@ class SwarmSimulationCore:
             accepted_targets.append(tid)
 
         if len(accepted_targets) == 0:
-            return
+            return []
 
         expanded_slots: List[int] = []
         for tid in accepted_targets:
@@ -1130,7 +1334,7 @@ class SwarmSimulationCore:
             expanded_slots.extend([tid] * req)
 
         if len(expanded_slots) == 0:
-            return
+            return []
 
         hunter_cost = self._build_hunter_cost_matrix(idle_hunter_ids, expanded_slots)
         hunter_pairs = MinCostMatcher.solve(hunter_cost)
@@ -1145,33 +1349,86 @@ class SwarmSimulationCore:
             tid = expanded_slots[col]
             target_hunter_map[tid].append(hid)
 
+        assignments: List[Tuple[int, int, List[int]]] = []
         for eid, tid in assigned_target_by_explorer.items():
             need = int(np.clip(self.targets[tid].required_hunters, 1, 5))
             picked_hunters = target_hunter_map.get(tid, [])
             if len(picked_hunters) < need:
-                self.targets[tid].in_pool = False
-                self.targets[tid].discovered = False
                 continue
-
             use_hunters = picked_hunters[:need]
-            ex = self.explorers[eid]
-            ex.state = "TRACK"
-            ex.assigned_target = int(tid)
+            assignments.append((int(eid), int(tid), [int(x) for x in use_hunters]))
+        return assignments
 
-            target = self.targets[tid]
-            target.assigned_explorer = int(eid)
-            target.assigned_hunters = [int(x) for x in use_hunters]
-            target.assign_step = int(self.time_step)
+    def _apply_assignment(self, assignments: List[Tuple[int, int, List[int]]]):
+        """
+        功能:
+            下发分配方案并更新状态。
+        输入:
+            assignments (List[Tuple[int,int,List[int]]]): 分配方案。
+        输出:
+            无。
+        """
+        if len(assignments) == 0:
+            return
+        # Close existing pursuit tasks (will be recreated if still assigned)
+        for runtime in self.pursuit_tasks.values():
+            runtime.env.close()
+        self.pursuit_tasks = {}
+
+        prev_pursuit_started = {idx: bool(t.pursuit_started) for idx, t in enumerate(self.targets)}
+
+        new_explorer_target: Dict[int, int] = {}
+        new_hunter_target: Dict[int, int] = {}
+        new_target_hunters: Dict[int, List[int]] = {}
+        for eid, tid, use_hunters in assignments:
+            new_explorer_target[int(eid)] = int(tid)
+            new_target_hunters[int(tid)] = [int(x) for x in use_hunters]
+            for hid in use_hunters:
+                new_hunter_target[int(hid)] = int(tid)
+
+        # Reset target assignment fields
+        for target in self.targets:
+            target.assigned_explorer = -1
+            target.assigned_hunters = []
+            target.assign_step = -1
             target.pursuit_started = False
 
-            for hid in use_hunters:
-                h = self.hunters[hid]
-                h.last_target = int(h.assigned_target)
-                h.resume_pos = np.asarray(h.agent.position, dtype=np.float32).copy()
-                h.assigned_target = int(tid)
-                h.state = "PURSUIT"
+        # Update explorers
+        for eid, ex in enumerate(self.explorers):
+            if int(eid) in new_explorer_target:
+                tid = int(new_explorer_target[eid])
+                ex.state = "TRACK"
+                ex.assigned_target = int(tid)
+            else:
+                if ex.assigned_target >= 0:
+                    ex.state = "RETURN"
+                ex.assigned_target = -1
 
-            self._create_pursuit_task_env(target_id=int(tid), hunter_ids=use_hunters)
+        # Update hunters
+        for hid, hunter in enumerate(self.hunters):
+            if int(hid) in new_hunter_target:
+                tid = int(new_hunter_target[hid])
+                hunter.last_target = int(hunter.assigned_target)
+                hunter.resume_pos = np.asarray(hunter.agent.position, dtype=np.float32).copy()
+                hunter.assigned_target = int(tid)
+                hunter.state = "PURSUIT"
+            else:
+                if hunter.assigned_target >= 0:
+                    self._release_hunter(hunter)
+
+        # Apply targets and create pursuit envs
+        for tid, hids in new_target_hunters.items():
+            if tid < 0 or tid >= len(self.targets):
+                continue
+            target = self.targets[tid]
+            target.assigned_explorer = int(
+                next((eid for eid, t in new_explorer_target.items() if int(t) == int(tid)), -1)
+            )
+            target.assigned_hunters = [int(x) for x in hids]
+            target.assign_step = int(self.time_step)
+            if bool(prev_pursuit_started.get(int(tid), False)):
+                target.pursuit_started = True
+            self._create_pursuit_task_env(target_id=int(tid), hunter_ids=hids)
 
     def _update_pursuit_progress(self):
         """
@@ -1197,7 +1454,6 @@ class SwarmSimulationCore:
                 target.last_seen_step = int(self.time_step)
                 target.last_seen_pos = target.agent.position.copy()
                 target.last_seen_vel = target.agent.velocity.copy()
-                target.pursuit_started = True
 
             if (not target.pursuit_started) and (int(self.time_step) - int(target.assign_step) > int(self.mission.loss_timeout_steps)):
                 self._abort_target_task(tid)
@@ -1319,6 +1575,13 @@ class SwarmSimulationCore:
             env=sub_env,
             hunter_ids=[int(x) for x in hunter_ids],
         )
+        if self.hunter_actor is not None and bool(self.hunter_actor.actor_path):
+            team_sees_target = bool(sub_env._team_sees_target())
+            obs_all = sub_env._build_obs(team_sees_target=team_sees_target)
+            if obs_all is not None and len(obs_all) > 0:
+                self.hunter_actor._ensure_policy(int(np.asarray(obs_all[0]).shape[0]))
+            for hid in hunter_ids:
+                self.hunter_actor.reset_hunter(int(hid))
 
     def _sync_target_task_from_subenv(self, target_id: int):
         """
@@ -1383,6 +1646,7 @@ class SwarmSimulationCore:
         hunter.assigned_target = -1
         hunter.state = "RETURN"
         hunter.agent.velocity[:] = 0.0
+        hunter.pursuit_traj_start = -1
 
     def _move_along_path(self, agent: ExplorerAgent, path: List[np.ndarray], runtime: ExplorerRuntime):
         """
@@ -1480,6 +1744,26 @@ class SwarmSimulationCore:
         agent.trajectory.append(agent.position.copy())
         return False
 
+    def _start_pursuit_for_target(self, target_id: int):
+        """
+        功能:
+            标记追捕开始并记录追捕轨迹起点。
+        输入:
+            target_id (int): 目标ID。
+        输出:
+            无。
+        """
+        if target_id < 0 or target_id >= len(self.targets):
+            return
+        target = self.targets[target_id]
+        for hid in list(target.assigned_hunters):
+            if hid < 0 or hid >= len(self.hunters):
+                continue
+            hunter = self.hunters[hid]
+            if len(hunter.agent.trajectory) == 0:
+                hunter.agent.trajectory.append(hunter.agent.position.copy())
+            hunter.pursuit_traj_start = int(max(0, len(hunter.agent.trajectory) - 1))
+
     def _build_hunter_chase_action(self, hunter: HunterAgent, target_pos: np.ndarray) -> np.ndarray:
         """
         功能:
@@ -1543,10 +1827,24 @@ class SwarmSimulationCore:
         # 先规划单Explorer全局覆盖航线，再按Explorer数量做连续等分。
         paths: List[List[np.ndarray]] = []
         total_wp = len(full_route)
+        if total_wp <= 0:
+            return [[self._sample_position()] for _ in range(max(1, num_explorers))]
+
+        boundaries = [int(math.floor(i * total_wp / max(1, num_explorers))) for i in range(num_explorers)]
+        boundaries.append(total_wp)
         for eid in range(num_explorers):
-            start = int(round(eid * total_wp / max(1, num_explorers)))
-            end = int(round((eid + 1) * total_wp / max(1, num_explorers)))
-            chunk = [wp.copy() for wp in full_route[start:end]]
+            start = int(boundaries[eid])
+            end = int(boundaries[eid + 1])
+            indices = list(range(start, end))
+            # 连接相邻Explorer的航线端点，确保覆盖路径连续。
+            if end < total_wp:
+                indices.append(int(end))
+            if len(indices) == 0:
+                idx = int(min(start, total_wp - 1))
+                indices = [idx]
+                if idx + 1 < total_wp:
+                    indices.append(idx + 1)
+            chunk = [full_route[i].copy() for i in indices]
             if len(chunk) == 0:
                 chunk = [self._sample_position()]
 
@@ -1644,7 +1942,10 @@ class SwarmSimulationCore:
                     continue
                 value_term = (10.0 - float(tgt.value))
                 endurance_term = 0.0
-                switch_term = 0.0
+                if int(ex.assigned_target) < 0 or int(ex.assigned_target) == int(tid):
+                    switch_term = 0.0
+                else:
+                    switch_term = 1.0
                 cost = (
                     float(self.weights.distance_weight) * dist
                     + float(self.weights.value_weight) * value_term
@@ -1677,7 +1978,10 @@ class SwarmSimulationCore:
                     continue
                 value_term = (10.0 - float(tgt.value))
                 endurance_term = 0.0
-                switch_term = 0.0 if hunter.last_target < 0 or hunter.last_target == tid else 1.0
+                if int(hunter.assigned_target) < 0 or int(hunter.assigned_target) == int(tid):
+                    switch_term = 0.0
+                else:
+                    switch_term = 1.0
                 cost = (
                     float(self.weights.distance_weight) * dist
                     + float(self.weights.value_weight) * value_term
@@ -1818,9 +2122,85 @@ class SwarmSimGUI:
         self.root = tk.Tk()
         self.root.title("Swarm Search + Pursuit Simulator")
         self.running = False
+        self.use_cjk_font = self._configure_matplotlib_font()
 
         self._build_ui()
         self._schedule_loop()
+
+    def _configure_matplotlib_font(self) -> bool:
+        """
+        功能:
+            配置Matplotlib中文字体，返回是否找到可用CJK字体。
+        输入:
+            无。
+        输出:
+            bool: 是否配置成功。
+        """
+        candidates = [
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "WenQuanYi Micro Hei",
+            "Microsoft YaHei",
+            "SimHei",
+            "PingFang SC",
+            "Heiti SC",
+        ]
+        available = {f.name for f in font_manager.fontManager.ttflist}
+        for name in candidates:
+            if name in available:
+                plt.rcParams["font.sans-serif"] = [name]
+                plt.rcParams["font.family"] = "sans-serif"
+                plt.rcParams["axes.unicode_minus"] = False
+                return True
+        return False
+
+    def _t(self, cn_text: str, en_text: str) -> str:
+        """
+        功能:
+            根据字体配置返回中文/英文显示文本。
+        输入:
+            cn_text (str): 中文文本。
+            en_text (str): 英文文本。
+        输出:
+            str: 选择后的文本。
+        """
+        return cn_text if self.use_cjk_font else en_text
+
+    def _get_explorer_phase(self, ex: ExplorerRuntime) -> str:
+        """
+        功能:
+            获取Explorer视觉状态（空闲/预备/追捕/耗尽）。
+        输入:
+            ex (ExplorerRuntime): Explorer运行态。
+        输出:
+            str: 状态标签。
+        """
+        if float(ex.remaining_endurance) <= 0.0 or (not bool(ex.agent.alive)):
+            return "EXH"
+        if int(ex.assigned_target) < 0:
+            return "IDLE"
+        tid = int(ex.assigned_target)
+        if 0 <= tid < len(self.sim.targets) and bool(self.sim.targets[tid].pursuit_started):
+            return "PUR"
+        return "PREP"
+
+    def _get_hunter_phase(self, hunter: HunterRuntime) -> str:
+        """
+        功能:
+            获取Hunter视觉状态（空闲/预备/追捕/耗尽）。
+        输入:
+            hunter (HunterRuntime): Hunter运行态。
+        输出:
+            str: 状态标签。
+        """
+        if float(hunter.remaining_endurance) <= 0.0 or str(hunter.state).upper() == "EXHAUSTED":
+            return "EXH"
+        if int(hunter.assigned_target) < 0:
+            return "IDLE"
+        tid = int(hunter.assigned_target)
+        if 0 <= tid < len(self.sim.targets) and bool(self.sim.targets[tid].pursuit_started):
+            return "PUR"
+        return "PREP"
 
     def _build_ui(self):
         """
@@ -1843,53 +2223,66 @@ class SwarmSimGUI:
 
         notebook = ttk.Notebook(left)
         notebook.pack(fill=tk.X, pady=(0, 6))
-        mission_tab = ttk.Frame(notebook, padding=4)
+        env_tab = ttk.Frame(notebook, padding=4)
+        plan_tab = ttk.Frame(notebook, padding=4)
         assign_tab = ttk.Frame(notebook, padding=4)
-        notebook.add(mission_tab, text="环境/任务")
+        notebook.add(env_tab, text="环境配置")
+        notebook.add(plan_tab, text="预规划")
         notebook.add(assign_tab, text="任务分配")
 
-        self._add_input(mission_tab, "world_size", str(self.sim.mission.world_size))
-        self._add_input(mission_tab, "hunters", str(self.sim.mission.hunters))
-        self._add_input(mission_tab, "explorers", str(self.sim.mission.explorers))
-        self._add_input(mission_tab, "targets", str(self.sim.mission.targets))
-        self._add_input(mission_tab, "max_steps", str(self.sim.mission.max_steps))
-        self._add_input(mission_tab, "dt", str(self.sim.mission.dt))
-        self._add_input(mission_tab, "overlap_rate", str(self.sim.mission.overlap_rate))
-        self._add_input(mission_tab, "wait_mode(split/zone)", str(self.sim.mission.hunters_wait_mode))
-        self._add_input(mission_tab, "track_speed_scale", str(self.sim.mission.explorer_track_speed_scale))
-        self._add_input(mission_tab, "loss_timeout", str(self.sim.mission.loss_timeout_steps))
-        self._add_input(mission_tab, "explorer_endurance", str(self.sim.mission.explorer_total_endurance))
-        self._add_input(mission_tab, "hunter_endurance", str(self.sim.mission.hunter_total_endurance))
-        self._add_input(mission_tab, "idle_endurance_cost", str(self.sim.mission.endurance_idle_cost))
+        self._add_input(env_tab, "world_size", str(self.sim.mission.world_size))
+        self._add_input(env_tab, "hunters", str(self.sim.mission.hunters))
+        self._add_input(env_tab, "explorers", str(self.sim.mission.explorers))
+        self._add_input(env_tab, "targets", str(self.sim.mission.targets))
+        self._add_input(env_tab, "max_steps", str(self.sim.mission.max_steps))
+        self._add_input(env_tab, "dt", str(self.sim.mission.dt))
+        self._add_input(env_tab, "seed", str(self.sim.base_seed))
+        self._add_input(env_tab, "explorer_max_speed", str(self.sim.mission.explorer_max_speed))
+        self._add_input(env_tab, "hunter_max_speed", str(self.sim.mission.hunter_max_speed))
+        self._add_input(env_tab, "target_max_speed", str(self.sim.mission.target_max_speed))
+        self._add_input(env_tab, "plan_mode(in-loop/on-loop)", "on-loop")
+        self._add_input(env_tab, "assign_mode(in-loop/on-loop)", "on-loop")
+
+        self._add_input(plan_tab, "overlap_rate", str(self.sim.mission.overlap_rate))
+        self._add_input(plan_tab, "wait_mode(split/zone)", str(self.sim.mission.hunters_wait_mode))
+        self._add_input(plan_tab, "track_speed_scale", str(self.sim.mission.explorer_track_speed_scale))
+        self._add_input(plan_tab, "loss_timeout", str(self.sim.mission.loss_timeout_steps))
 
         self._add_input(assign_tab, "w_distance", str(self.sim.weights.distance_weight))
         self._add_input(assign_tab, "w_value", str(self.sim.weights.value_weight))
         self._add_input(assign_tab, "w_endurance", str(self.sim.weights.endurance_weight))
         self._add_input(assign_tab, "w_switch", str(self.sim.weights.switch_weight))
         self._add_input(assign_tab, "max_assign_dist", str(self.sim.weights.max_assign_dist))
+        self._add_input(assign_tab, "explorer_endurance", str(self.sim.mission.explorer_total_endurance))
+        self._add_input(assign_tab, "hunter_endurance", str(self.sim.mission.hunter_total_endurance))
+        self._add_input(assign_tab, "idle_endurance_cost", str(self.sim.mission.endurance_idle_cost))
 
-        row_buttons = ttk.Frame(left)
-        row_buttons.pack(fill=tk.X, pady=(8, 4))
-        ttk.Button(row_buttons, text="新建任务", command=self._on_apply).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row_buttons, text="预规划", command=self._on_plan).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row_buttons, text="下发执行", command=self._on_dispatch).pack(side=tk.LEFT, padx=2)
+        env_buttons = ttk.Frame(left)
+        env_buttons.pack(fill=tk.X, pady=(8, 4))
+        ttk.Button(env_buttons, text="重置", command=self._on_env_reset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(env_buttons, text="随机", command=self._on_env_random_reset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(env_buttons, text="暂停", command=self._on_pause).pack(side=tk.LEFT, padx=2)
+        ttk.Button(env_buttons, text="开始", command=self._on_start).pack(side=tk.LEFT, padx=2)
 
-        row_buttons2 = ttk.Frame(left)
-        row_buttons2.pack(fill=tk.X, pady=(4, 4))
-        ttk.Button(row_buttons2, text="开始", command=self._on_start).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row_buttons2, text="暂停", command=self._on_pause).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row_buttons2, text="单步", command=self._on_step).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row_buttons2, text="重置", command=self._on_reset).pack(side=tk.LEFT, padx=2)
+        plan_buttons = ttk.Frame(left)
+        plan_buttons.pack(fill=tk.X, pady=(4, 4))
+        ttk.Button(plan_buttons, text="预规划", command=self._on_plan).pack(side=tk.LEFT, padx=2)
+        ttk.Button(plan_buttons, text="下发", command=self._on_dispatch).pack(side=tk.LEFT, padx=2)
 
-        row_buttons3 = ttk.Frame(left)
-        row_buttons3.pack(fill=tk.X, pady=(4, 4))
-        ttk.Button(row_buttons3, text="保存倾向", command=self._on_save_profile).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row_buttons3, text="加载倾向", command=self._on_load_profile).pack(side=tk.LEFT, padx=2)
+        assign_buttons = ttk.Frame(left)
+        assign_buttons.pack(fill=tk.X, pady=(4, 4))
+        ttk.Button(assign_buttons, text="任务分配", command=self._on_manual_assignment).pack(side=tk.LEFT, padx=2)
+        ttk.Button(assign_buttons, text="下发分配方案", command=self._on_apply_assignment).pack(side=tk.LEFT, padx=2)
+        ttk.Button(assign_buttons, text="保存倾向", command=self._on_save_profile).pack(side=tk.LEFT, padx=2)
+        ttk.Button(assign_buttons, text="加载倾向", command=self._on_load_profile).pack(side=tk.LEFT, padx=2)
 
         row_vis = ttk.Frame(left)
         row_vis.pack(fill=tk.X, pady=(4, 4))
         self.show_explorer_perception_var = tk.BooleanVar(value=True)
         self.show_target_capture_var = tk.BooleanVar(value=True)
+        self.show_all_targets_var = tk.BooleanVar(value=False)
+        self.show_pursuit_trace_var = tk.BooleanVar(value=False)
+        self.show_assignment_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             row_vis,
             text="显示Explorer感知圈",
@@ -1900,6 +2293,24 @@ class SwarmSimGUI:
             row_vis,
             text="显示Target捕获圈",
             variable=self.show_target_capture_var,
+            command=self._draw_scene,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(
+            row_vis,
+            text="显示全部目标",
+            variable=self.show_all_targets_var,
+            command=self._draw_scene,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(
+            row_vis,
+            text="显示追捕轨迹",
+            variable=self.show_pursuit_trace_var,
+            command=self._draw_scene,
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(
+            row_vis,
+            text="显示分配结果",
+            variable=self.show_assignment_var,
             command=self._draw_scene,
         ).pack(side=tk.LEFT, padx=2)
 
@@ -1953,6 +2364,9 @@ class SwarmSimGUI:
             hunters=max(1, int(float(self.inputs["hunters"].get()))),
             explorers=max(1, int(float(self.inputs["explorers"].get()))),
             targets=max(1, int(float(self.inputs["targets"].get()))),
+            explorer_max_speed=float(self.inputs["explorer_max_speed"].get()),
+            hunter_max_speed=float(self.inputs["hunter_max_speed"].get()),
+            target_max_speed=float(self.inputs["target_max_speed"].get()),
             overlap_rate=float(self.inputs["overlap_rate"].get()),
             hunters_wait_mode=str(self.inputs["wait_mode(split/zone)"].get()).strip().lower(),
             explorer_track_speed_scale=float(self.inputs["track_speed_scale"].get()),
@@ -1973,10 +2387,41 @@ class SwarmSimGUI:
         )
         return mission, weights
 
-    def _on_apply(self):
+    def _read_modes_and_seed(self) -> Tuple[str, str, int]:
         """
         功能:
-            应用任务参数并重新初始化场景。
+            读取预规划/分配模式与随机种子。
+        输入:
+            无。
+        输出:
+            Tuple[str,str,int]: (plan_mode, assign_mode, seed)
+        """
+        plan_mode = str(self.inputs["plan_mode(in-loop/on-loop)"].get()).strip().lower()
+        assign_mode = str(self.inputs["assign_mode(in-loop/on-loop)"].get()).strip().lower()
+        if plan_mode not in ("in-loop", "on-loop"):
+            plan_mode = "on-loop"
+        if assign_mode not in ("in-loop", "on-loop"):
+            assign_mode = "on-loop"
+        seed = int(float(self.inputs["seed"].get()))
+        return plan_mode, assign_mode, seed
+
+    def _apply_modes(self):
+        """
+        功能:
+            将GUI的决策模式同步到仿真核心。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        plan_mode, assign_mode, _ = self._read_modes_and_seed()
+        self.plan_mode = plan_mode
+        self.sim.assign_mode = assign_mode
+
+    def _on_env_reset(self):
+        """
+        功能:
+            使用固定seed重置环境。
         输入:
             无。
         输出:
@@ -1984,9 +2429,40 @@ class SwarmSimGUI:
         """
         try:
             mission, weights = self._read_mission_and_weights()
+            self._apply_modes()
+            _, _, seed = self._read_modes_and_seed()
             self.running = False
-            self.sim.apply_task_settings(mission, weights)
-            self.status_var.set("Task initialized")
+            self.sim.mission = mission
+            self.sim.weights = weights
+            self.sim.base_seed = int(seed)
+            self.sim.reset_world_with_seed(int(seed))
+            self.status_var.set(f"Reset with seed={int(seed)}")
+            self._draw_scene()
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("参数错误", str(e))
+
+    def _on_env_random_reset(self):
+        """
+        功能:
+            使用seed+1重置环境。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        try:
+            mission, weights = self._read_mission_and_weights()
+            self._apply_modes()
+            _, _, seed = self._read_modes_and_seed()
+            seed = int(seed) + 1
+            self.inputs["seed"].set(str(seed))
+            self.running = False
+            self.sim.mission = mission
+            self.sim.weights = weights
+            self.sim.base_seed = int(seed)
+            self.sim.reset_world_with_seed(int(seed))
+            self.status_var.set(f"Random reset with seed={int(seed)}")
             self._draw_scene()
         except Exception as e:
             if messagebox is not None:
@@ -2001,8 +2477,27 @@ class SwarmSimGUI:
         输出:
             无。
         """
+        try:
+            mission, weights = self._read_mission_and_weights()
+            self._apply_modes()
+            self.sim.mission.overlap_rate = float(mission.overlap_rate)
+            self.sim.mission.hunters_wait_mode = str(mission.hunters_wait_mode).lower()
+            self.sim.mission.explorer_track_speed_scale = float(mission.explorer_track_speed_scale)
+            self.sim.mission.loss_timeout_steps = int(mission.loss_timeout_steps)
+            self.sim.weights = weights
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("参数错误", str(e))
+            return
         self.sim.plan_routes()
-        self.status_var.set("Planned")
+        if getattr(self, "plan_mode", "on-loop") == "on-loop":
+            self.sim.dispatch_execute()
+            self.running = True
+            self.status_var.set("Planned -> Dispatched")
+        else:
+            self.running = False
+            self.sim.executing = False
+            self.status_var.set("Planned (pending dispatch)")
         self._draw_scene()
 
     def _on_dispatch(self):
@@ -2015,6 +2510,7 @@ class SwarmSimGUI:
             无。
         """
         self.sim.dispatch_execute()
+        self.running = True
         self.status_var.set("Dispatched")
 
     def _on_start(self):
@@ -2026,6 +2522,7 @@ class SwarmSimGUI:
         输出:
             无。
         """
+        self._apply_modes()
         self.running = True
 
     def _on_pause(self):
@@ -2051,19 +2548,55 @@ class SwarmSimGUI:
         self.sim.step_once()
         self._draw_scene()
 
-    def _on_reset(self):
+    def _on_manual_assignment(self):
         """
         功能:
-            重置任务。
+            手动触发任务分配。
         输入:
             无。
         输出:
             无。
         """
-        self.running = False
-        self.sim.reset_world()
-        self.status_var.set("Reset")
+        self._apply_modes()
+        try:
+            _, weights = self._read_mission_and_weights()
+            self.sim.weights = weights
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("参数错误", str(e))
+            return
+        assignments = self.sim._compute_assignment()
+        if len(assignments) == 0:
+            self.status_var.set("No assignment")
+            self._draw_scene()
+            return
+        if str(self.sim.assign_mode).lower() == "in-loop":
+            self.sim.pending_assignment = assignments
+            self.running = False
+            self.sim.executing = False
+            self.status_var.set("Assignment pending")
+        else:
+            self.sim._apply_assignment(assignments)
+            self.status_var.set("Assignment applied")
         self._draw_scene()
+
+    def _on_apply_assignment(self):
+        """
+        功能:
+            下发待定任务分配方案。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if self.sim.pending_assignment is None:
+            self.status_var.set("No pending assignment")
+            return
+        self.sim._apply_assignment(self.sim.pending_assignment)
+        self.sim.pending_assignment = None
+        self.sim.dispatch_execute()
+        self.running = True
+        self.status_var.set("Assignment dispatched")
 
     def _on_save_profile(self):
         """
@@ -2143,14 +2676,31 @@ class SwarmSimGUI:
         explorer_perception_radius = float(getattr(self.sim.cfg.Explorer, "perception_radius", -1))
         show_explorer_perception = bool(getattr(self, "show_explorer_perception_var", None).get())
         show_target_capture = bool(getattr(self, "show_target_capture_var", None).get())
+        show_all_targets = bool(getattr(self, "show_all_targets_var", None).get())
+        show_pursuit_trace = bool(getattr(self, "show_pursuit_trace_var", None).get())
+        show_assignment = bool(getattr(self, "show_assignment_var", None).get())
         self.ax.set_xlim(-ws, ws)
         self.ax.set_ylim(-ws, ws)
         self.ax.set_aspect("equal", adjustable="box")
         self.ax.grid(True, alpha=0.2)
 
+        explorer_colors = {
+            "IDLE": "tab:green",
+            "PREP": "tab:orange",
+            "PUR": "tab:red",
+            "EXH": "tab:gray",
+        }
+        hunter_colors = {
+            "IDLE": "tab:blue",
+            "PREP": "tab:orange",
+            "PUR": "tab:red",
+            "EXH": "tab:gray",
+        }
+
         for ex in self.sim.explorers:
             p = ex.agent.position
-            color = "tab:green" if ex.state == "SEARCH" else ("tab:orange" if ex.state == "TRACK" else "tab:gray")
+            phase = self._get_explorer_phase(ex)
+            color = explorer_colors.get(phase, "tab:green")
             if show_explorer_perception and explorer_perception_radius > 0:
                 ex_circle = plt.Circle(
                     (float(p[0]), float(p[1])),
@@ -2167,14 +2717,23 @@ class SwarmSimGUI:
 
         for h in self.sim.hunters:
             p = h.agent.position
-            color = "tab:blue" if h.assigned_target < 0 else "tab:red"
+            phase = self._get_hunter_phase(h)
+            color = hunter_colors.get(phase, "tab:blue")
             self.ax.scatter([p[0]], [p[1]], c=color, s=35, marker="o")
             if h.standby_mode == "split" and len(h.standby_path) > 1:
                 path_np = np.asarray(h.standby_path)
                 self.ax.plot(path_np[:, 0], path_np[:, 1], color="tab:blue", alpha=0.12)
+            if show_pursuit_trace and int(h.pursuit_traj_start) >= 0:
+                traj = h.agent.trajectory
+                start_idx = int(h.pursuit_traj_start)
+                if len(traj) > start_idx + 1:
+                    seg = np.asarray(traj[start_idx:], dtype=np.float32)
+                    self.ax.plot(seg[:, 0], seg[:, 1], color="tab:red", alpha=0.45, linewidth=1.2)
 
         for tid, t in enumerate(self.sim.targets):
             if not t.alive:
+                continue
+            if not show_all_targets and (not bool(t.in_pool)) and (not bool(t.pursuit_started)):
                 continue
             p = t.agent.position
             policy_name = str(t.policy_type).lower()
@@ -2200,21 +2759,201 @@ class SwarmSimGUI:
                 self.ax.add_patch(cap_circle)
             color = "tab:purple" if t.in_pool else "black"
             self.ax.scatter([p[0]], [p[1]], c=color, s=40, marker="x")
-            self.ax.text(float(p[0]) + 1.0, float(p[1]) + 1.0, f"T{tid}:{policy_name}", fontsize=8)
+            self.ax.text(
+                float(p[0]) + 1.0,
+                float(p[1]) + 1.0,
+                f"T{tid}:{policy_name}",
+                fontsize=8,
+            )
+
+        if show_assignment:
+            # Applied assignment visualization (solid)
+            for tid, target in enumerate(self.sim.targets):
+                if not target.alive:
+                    continue
+                if int(target.assigned_explorer) >= 0:
+                    eid = int(target.assigned_explorer)
+                    if 0 <= eid < len(self.sim.explorers):
+                        ex_pos = self.sim.explorers[eid].agent.position
+                        tgt_pos = target.agent.position
+                        self.ax.plot(
+                            [ex_pos[0], tgt_pos[0]],
+                            [ex_pos[1], tgt_pos[1]],
+                            color="tab:orange",
+                            linestyle="-",
+                            linewidth=1.3,
+                            alpha=0.9,
+                        )
+                for hid in list(target.assigned_hunters):
+                    if hid < 0 or hid >= len(self.sim.hunters):
+                        continue
+                    h_pos = self.sim.hunters[hid].agent.position
+                    tgt_pos = target.agent.position
+                    self.ax.plot(
+                        [h_pos[0], tgt_pos[0]],
+                        [h_pos[1], tgt_pos[1]],
+                        color="tab:red",
+                        linestyle="-",
+                        linewidth=1.1,
+                        alpha=0.8,
+                    )
+
+            # Pending assignment visualization (dashed)
+            if self.sim.pending_assignment is not None and len(self.sim.pending_assignment) > 0:
+                for eid, tid, hids in self.sim.pending_assignment:
+                    if eid < 0 or eid >= len(self.sim.explorers):
+                        continue
+                    if tid < 0 or tid >= len(self.sim.targets):
+                        continue
+                    ex_pos = self.sim.explorers[eid].agent.position
+                    tgt_pos = self.sim.targets[tid].agent.position
+                    self.ax.plot(
+                        [ex_pos[0], tgt_pos[0]],
+                        [ex_pos[1], tgt_pos[1]],
+                        color="tab:orange",
+                        linestyle="--",
+                        linewidth=1.1,
+                        alpha=0.85,
+                    )
+                    for hid in hids:
+                        if hid < 0 or hid >= len(self.sim.hunters):
+                            continue
+                        h_pos = self.sim.hunters[hid].agent.position
+                        self.ax.plot(
+                            [h_pos[0], tgt_pos[0]],
+                            [h_pos[1], tgt_pos[1]],
+                            color="tab:red",
+                            linestyle="--",
+                            linewidth=1.0,
+                            alpha=0.7,
+                        )
 
         legend_handles = [
-            Line2D([0], [0], marker="o", color="w", markerfacecolor="tab:blue", markeredgecolor="tab:blue", markersize=7, label="Hunter(待命)"),
-            Line2D([0], [0], marker="o", color="w", markerfacecolor="tab:red", markeredgecolor="tab:red", markersize=7, label="Hunter(追捕)"),
-            Line2D([0], [0], marker="^", color="w", markerfacecolor="tab:green", markeredgecolor="tab:green", markersize=7, label="Explorer"),
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="w",
+                markerfacecolor=explorer_colors["IDLE"],
+                markeredgecolor=explorer_colors["IDLE"],
+                markersize=7,
+                label=self._t("Explorer-空闲", "Explorer-Idle"),
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="w",
+                markerfacecolor=explorer_colors["PREP"],
+                markeredgecolor=explorer_colors["PREP"],
+                markersize=7,
+                label=self._t("Explorer-预备", "Explorer-Prep"),
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="w",
+                markerfacecolor=explorer_colors["PUR"],
+                markeredgecolor=explorer_colors["PUR"],
+                markersize=7,
+                label=self._t("Explorer-追捕", "Explorer-Pursuit"),
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor=hunter_colors["IDLE"],
+                markeredgecolor=hunter_colors["IDLE"],
+                markersize=7,
+                label=self._t("Hunter-空闲", "Hunter-Idle"),
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor=hunter_colors["PREP"],
+                markeredgecolor=hunter_colors["PREP"],
+                markersize=7,
+                label=self._t("Hunter-预备", "Hunter-Prep"),
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor=hunter_colors["PUR"],
+                markeredgecolor=hunter_colors["PUR"],
+                markersize=7,
+                label=self._t("Hunter-追捕", "Hunter-Pursuit"),
+            ),
             Line2D([0], [0], marker="x", color="black", markersize=8, label="Target"),
-            Patch(facecolor="tab:green", alpha=0.12, label="Explorer感知范围"),
-            Patch(facecolor="tab:red", alpha=0.12, label="Target捕获范围"),
         ]
+        if show_assignment:
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="tab:orange",
+                    linestyle="-",
+                    linewidth=1.2,
+                    label=self._t("已下发(Explorer)", "Assigned-Explorer"),
+                )
+            )
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="tab:red",
+                    linestyle="-",
+                    linewidth=1.0,
+                    label=self._t("已下发(Hunter)", "Assigned-Hunter"),
+                )
+            )
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="tab:orange",
+                    linestyle="--",
+                    linewidth=1.1,
+                    label=self._t("待下发(Explorer)", "Pending-Explorer"),
+                )
+            )
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="tab:red",
+                    linestyle="--",
+                    linewidth=1.0,
+                    label=self._t("待下发(Hunter)", "Pending-Hunter"),
+                )
+            )
         if show_explorer_perception:
-            legend_handles.append(Patch(facecolor="tab:green", alpha=0.12, label="Explorer感知范围"))
+            legend_handles.append(Patch(facecolor="tab:green", alpha=0.12, label=self._t("Explorer感知范围", "Explorer-Perception")))
         if show_target_capture:
-            legend_handles.append(Patch(facecolor="tab:red", alpha=0.12, label="Target捕获范围"))
-        self.ax.legend(handles=legend_handles, loc="upper right", fontsize=8, framealpha=0.9)
+            legend_handles.append(Patch(facecolor="tab:red", alpha=0.12, label=self._t("Target捕获范围", "Target-Capture")))
+        has_pending = bool(show_assignment and self.sim.pending_assignment is not None and len(self.sim.pending_assignment) > 0)
+        if not has_pending:
+            filtered = []
+            for h in legend_handles:
+                label = str(getattr(h, "get_label", lambda: "")())
+                if ("Pending" in label) or ("待下发" in label):
+                    continue
+                filtered.append(h)
+            legend_handles = filtered
+        self.ax.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.08),
+            ncol=2,
+            fontsize=8,
+            framealpha=0.9,
+            borderaxespad=0.0,
+        )
 
         summary = self.sim.get_summary()
         status_text = (
@@ -2253,12 +2992,12 @@ class SwarmSimGUI:
         discovered = sum(1 for t in self.sim.targets if t.alive and t.in_pool and not t.pursuit_started)
         undiscovered = max(0, total_targets - captured - pursuing - discovered)
 
-        ax.text(0.02, 0.98, "任务池", va="top", fontsize=9, fontweight="bold")
+        ax.text(0.02, 0.98, self._t("任务池", "Targets"), va="top", fontsize=9, fontweight="bold")
         target_stats = [
-            ("Undisc", undiscovered, "#9e9e9e"),
-            ("Discov", discovered, "#9467bd"),
-            ("Pursue", pursuing, "#ff7f0e"),
-            ("Capt", captured, "#2ca02c"),
+            (self._t("未发现", "Undisc"), undiscovered, "#9e9e9e"),
+            (self._t("已发现", "Discov"), discovered, "#9467bd"),
+            (self._t("追捕中", "Pursue"), pursuing, "#ff7f0e"),
+            (self._t("已捕获", "Capt"), captured, "#2ca02c"),
         ]
         y0 = 0.92
         for idx, (name, value, color) in enumerate(target_stats):
@@ -2269,31 +3008,40 @@ class SwarmSimGUI:
             ax.text(0.67, y - 0.006, f"{name}:{int(value)}", fontsize=7, va="center")
 
         # Step 2: 无人机资源池续航与任务状态
-        ax.text(0.02, 0.67, "资源池", va="top", fontsize=9, fontweight="bold")
+        ax.text(0.02, 0.67, self._t("资源池", "Resources"), va="top", fontsize=9, fontweight="bold")
+        explorer_colors = {
+            "IDLE": "#2ca02c",
+            "PREP": "#ff7f0e",
+            "PUR": "#d62728",
+            "EXH": "#7f7f7f",
+        }
+        hunter_colors = {
+            "IDLE": "#1f77b4",
+            "PREP": "#ff7f0e",
+            "PUR": "#d62728",
+            "EXH": "#7f7f7f",
+        }
         drone_rows = []
         for idx, ex in enumerate(self.sim.explorers):
-            if not ex.agent.alive and ex.remaining_endurance <= 0.0:
-                state = "EXH"
-            else:
-                state = str(ex.state)[:4].upper()
+            state = self._get_explorer_phase(ex)
             drone_rows.append(
                 (
                     f"E{int(idx)}",
                     float(ex.remaining_endurance),
                     float(max(1e-6, ex.total_endurance)),
                     state,
-                    "#2ca02c",
+                    explorer_colors.get(state, "#2ca02c"),
                 )
             )
         for idx, h in enumerate(self.sim.hunters):
-            state = str(h.state)[:4].upper()
+            state = self._get_hunter_phase(h)
             drone_rows.append(
                 (
                     f"H{int(idx)}",
                     float(h.remaining_endurance),
                     float(max(1e-6, h.total_endurance)),
                     state,
-                    "#1f77b4" if h.assigned_target < 0 else "#d62728",
+                    hunter_colors.get(state, "#1f77b4"),
                 )
             )
 
@@ -2315,7 +3063,7 @@ class SwarmSimGUI:
             ax.text(0.02, 0.02, f"+{len(drone_rows)-max_rows} more", fontsize=7, color="#666666")
 
         # Step 3: 目标分配明细（E/H映射）
-        ax.text(0.02, 0.16, "目标分配", va="top", fontsize=9, fontweight="bold")
+        ax.text(0.02, 0.16, self._t("目标分配", "Assignments"), va="top", fontsize=9, fontweight="bold")
         assign_y = 0.13
         for tid, target in enumerate(self.sim.targets[:6]):
             if not target.alive:
@@ -2368,16 +3116,16 @@ class SwarmSimGUI:
             return
 
         lines: List[str] = []
-        lines.append("[任务目标池]")
+        lines.append(self._t("[任务目标池]", "[Target Pool]"))
         for tid, target in enumerate(self.sim.targets):
             if not target.alive:
-                status = "CAPTURED"
+                status = self._t("已捕获", "CAPTURED")
             elif target.pursuit_started:
-                status = "PURSUIT"
+                status = self._t("追捕中", "PURSUIT")
             elif target.in_pool:
-                status = "DISCOVERED"
+                status = self._t("已发现", "DISCOVERED")
             else:
-                status = "UNDISCOVERED"
+                status = self._t("未发现", "UNDISCOVERED")
             lines.append(
                 "T{} | {} | policy={} | req_h={} | ex={} | hs={}".format(
                     int(tid),
@@ -2390,13 +3138,14 @@ class SwarmSimGUI:
             )
 
         lines.append("")
-        lines.append("[无人机资源池 - Explorer]")
+        lines.append(self._t("[无人机资源池 - Explorer]", "[Resources - Explorer]"))
         for eid, ex in enumerate(self.sim.explorers):
             bar = self._format_endurance_bar(ex.remaining_endurance, ex.total_endurance)
+            phase = self._get_explorer_phase(ex)
             lines.append(
                 "E{} | state={} | task={} | end={:.1f}/{:.1f} {}".format(
                     int(eid),
-                    str(ex.state),
+                    phase,
                     int(ex.assigned_target),
                     float(ex.remaining_endurance),
                     float(ex.total_endurance),
@@ -2405,13 +3154,14 @@ class SwarmSimGUI:
             )
 
         lines.append("")
-        lines.append("[无人机资源池 - Hunter]")
+        lines.append(self._t("[无人机资源池 - Hunter]", "[Resources - Hunter]"))
         for hid, hunter in enumerate(self.sim.hunters):
             bar = self._format_endurance_bar(hunter.remaining_endurance, hunter.total_endurance)
+            phase = self._get_hunter_phase(hunter)
             lines.append(
                 "H{} | state={} | mode={} | task={} | end={:.1f}/{:.1f} {}".format(
                     int(hid),
-                    str(hunter.state),
+                    phase,
                     str(hunter.standby_mode),
                     int(hunter.assigned_target),
                     float(hunter.remaining_endurance),
@@ -2457,6 +3207,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--target_actor", type=str, default=None, help="Optional actor for target learn policy")
+    parser.add_argument("--hunter_actor", type=str, default=None, help="Optional actor for hunter pursuit policy")
     return parser
 
 
@@ -2507,6 +3258,7 @@ def main():
         cfg=cfg,
         seed=args.seed,
         target_actor_path=args.target_actor,
+        hunter_actor_path=args.hunter_actor,
         sim_overrides=sim_overrides,
     )
     app = SwarmSimGUI(sim)
