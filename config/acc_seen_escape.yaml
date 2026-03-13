@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: rndPolicy_v3v1_esc20_deltaBase5_Zone
+  experiment_name: rndPolicy_v3v1_deltaBase5_Zone
   seed: 1
   num_env_steps: 2000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -51,17 +51,17 @@ reward:
   base_delta_norm_scale: 20.0
 
   # Escape Gap
-  escape_gap_enable: true
+  escape_gap_enable: false
   escape_gap_hunter_reward_scale: 20.0
   escape_gap_target_reward_scale: 5.0
   # 新版拆分项：包围质量reward（基于encircle_score / gap_open_score）
-  escape_gap_encircle_hunter_reward_scale: 20.0
+  escape_gap_encircle_hunter_reward_scale: 8.0
   escape_gap_encircle_target_reward_scale: 5.0
   # 新版拆分项：拦截reward（基于direction_score，速度低于阈值不计算）
   escape_gap_intercept_hunter_reward_scale: 3.0
   escape_gap_intercept_target_reward_scale: 6.0
   escape_gap_quality_worst_penalty_threshold: 0.7  # gap_open_ratio超过该阈值开始惩罚
-  escape_gap_quality_worst_penalty_scale: 3.0
+  escape_gap_quality_worst_penalty_scale: 5.0
   escape_radius: 35.0
 
   # Capture reward

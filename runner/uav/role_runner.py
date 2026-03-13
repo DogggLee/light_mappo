@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
 
 from utils.separated_buffer import SeparatedReplayBuffer
+from envs.env_wrappers import DummyVecEnv, EvalDummyVecEnv
 
 
 def _t2n(x):
@@ -1195,6 +1196,617 @@ class RoleBasedRunner(object):
     ):
         """
         功能:
+            执行evaluation（直接并行评估全部eval_env；使用EvalDummyVecEnv优化step/render）。
+        输入:
+            total_num_steps (int): 当前累计环境步数。
+            episode (int): 当前训练episode编号。
+            eval_envs (VecEnv | None): 评估环境；None时使用self.eval_envs。
+            bucket (str): 评估桶名称（fixed/target_learn等）。
+            save_gifs (bool): 是否保存GIF。
+            record_logs (bool): 是否写TB与CSV。
+            gif_output_dir (str | Path | None): GIF输出目录，None时使用self.gif_dir。
+            gif_env_limit (int | None): 保存GIF的环境数量上限，None表示保存全部。
+        输出:
+            dict: evaluation指标字典。
+        """
+        # Step 1: 评估调试渲染/逐步绘图场景下，沿用串行路径。
+        if bool(self.eval_step_plot) or bool(self.eval_step_render):
+            return self.serial_eval(
+                total_num_steps=total_num_steps,
+                episode=episode,
+                eval_envs=eval_envs,
+                bucket=bucket,
+                save_gifs=save_gifs,
+                record_logs=record_logs,
+                gif_output_dir=gif_output_dir,
+                gif_env_limit=gif_env_limit,
+            )
+
+        if eval_envs is None:
+            eval_envs = self.eval_envs
+
+        if eval_envs is None:
+            return {
+                "eval_reward": 0.0,
+                "capture_rate": 0.0,
+                "capture_steps": float(self.eval_episode_length),
+                "alive_rate": 0.0,
+                "max_escape_gap_angle": float("nan"),
+                "captured_episodes": 0,
+                "total_eval_episodes": 0,
+            }
+
+        if not (hasattr(eval_envs, "envs") and isinstance(getattr(eval_envs, "envs"), list)):
+            raise TypeError("Parallel eval requires DummyVecEnv-like eval_envs with `.envs` list.")
+
+        # Step 2: recover一次，并基于全部eval env构造专用EvalDummyVecEnv执行并行评估。
+        eval_obs_all = eval_envs.reset(mode="recover")
+        n_env = int(eval_obs_all.shape[0])
+        eval_num_agents = int(eval_obs_all.shape[1])
+        eval_num_hunters = int(max(1, eval_num_agents - 1))
+        task_specs_all = getattr(eval_envs, "auto_reset_task_specs", None)
+        eval_envs_fast = EvalDummyVecEnv([lambda env_ref=env_ref: env_ref for env_ref in eval_envs.envs])
+
+        self._print_timed(
+            "[EvalStart] bucket={}, episode={}, total_steps={}, eval_envs={}, mode=parallel(all-envs)".format(
+                str(bucket), int(episode), int(total_num_steps), int(n_env)
+            )
+        )
+
+        gif_env_ids = list(range(n_env))
+        if gif_env_limit is not None:
+            gif_env_ids = list(range(max(0, min(int(gif_env_limit), int(n_env)))))
+        gif_env_id_set = set(gif_env_ids)
+
+        group_result = self._eval_group_envs(
+            eval_envs_group=eval_envs_fast,
+            num_hunters=int(eval_num_hunters),
+            save_gifs=bool(save_gifs),
+            episode=int(episode),
+            bucket=str(bucket),
+            gif_output_dir=gif_output_dir,
+            group_global_env_indices=list(range(n_env)),
+            gif_env_id_set=gif_env_id_set,
+            task_specs=task_specs_all,
+        )
+
+        # Step 3: 汇总并复用原有日志/CSV逻辑。
+        return self._finalize_eval_metrics_and_logs(
+            total_num_steps=total_num_steps,
+            episode=episode,
+            bucket=bucket,
+            record_logs=record_logs,
+            save_gifs=bool(save_gifs),
+            gif_output_dir=gif_output_dir,
+            env_episode_rewards=group_result["env_episode_rewards"],
+            env_captured=group_result["env_captured"],
+            env_capture_step=group_result["env_capture_step"],
+            env_alive_rate=group_result["env_alive_rate"],
+            env_active_hunter_count=group_result["env_active_hunter_count"],
+            env_capture_escape_gap_angle=group_result["env_capture_escape_gap_angle"],
+        )
+
+    @torch.no_grad()
+    def eval_group(
+        self,
+        total_num_steps,
+        episode,
+        eval_envs=None,
+        bucket="fixed",
+        save_gifs=False,
+        record_logs=True,
+        gif_output_dir=None,
+        gif_env_limit=None,
+    ):
+        """
+        功能:
+            按hunter数量分组执行并行evaluation（备用实现）。
+            TODO(debug): 分组评估与GIF/任务恢复边界条件仍需系统性回归验证。
+        输入:
+            total_num_steps (int): 当前累计环境步数。
+            episode (int): 当前训练episode编号。
+            eval_envs (VecEnv | None): 评估环境；None时使用self.eval_envs。
+            bucket (str): 评估桶名称（fixed/target_learn等）。
+            save_gifs (bool): 是否保存GIF。
+            record_logs (bool): 是否写TB与CSV。
+            gif_output_dir (str | Path | None): GIF输出目录，None时使用self.gif_dir。
+            gif_env_limit (int | None): 保存GIF的环境数量上限，None表示保存全部。
+        输出:
+            dict: evaluation指标字典。
+        """
+        if eval_envs is None:
+            eval_envs = self.eval_envs
+        if eval_envs is None:
+            return {
+                "eval_reward": 0.0,
+                "capture_rate": 0.0,
+                "capture_steps": float(self.eval_episode_length),
+                "alive_rate": 0.0,
+                "max_escape_gap_angle": float("nan"),
+                "captured_episodes": 0,
+                "total_eval_episodes": 0,
+            }
+        if not (hasattr(eval_envs, "envs") and isinstance(getattr(eval_envs, "envs"), list)):
+            raise TypeError("Grouped eval requires DummyVecEnv-like eval_envs with `.envs` list.")
+
+        eval_obs_all = eval_envs.reset(mode="recover")
+        n_env = int(eval_obs_all.shape[0])
+        eval_num_agents = int(eval_obs_all.shape[1])
+        eval_num_hunters = int(max(1, eval_num_agents - 1))
+        groups = self._group_eval_env_indices_by_active_hunters(eval_envs)
+        gif_env_ids = list(range(n_env))
+        if gif_env_limit is not None:
+            gif_env_ids = list(range(max(0, min(int(gif_env_limit), int(n_env)))))
+        gif_env_id_set = set(gif_env_ids)
+
+        env_episode_rewards = np.zeros(n_env, dtype=np.float32)
+        env_captured = np.zeros(n_env, dtype=bool)
+        env_capture_step = np.full(n_env, -1, dtype=np.int32)
+        env_alive_rate = np.full(n_env, 0.0, dtype=np.float32)
+        env_active_hunter_count = np.full(n_env, int(eval_num_hunters), dtype=np.int32)
+        env_capture_escape_gap_angle = np.full(n_env, np.nan, dtype=np.float32)
+
+        for hunter_count, group_info in sorted(groups.items(), key=lambda x: int(x[0])):
+            group_env_indices = list(group_info["env_indices"])
+            group_eval_envs = group_info["vec_env"]
+            group_result = self._eval_group_envs(
+                eval_envs_group=group_eval_envs,
+                num_hunters=int(hunter_count),
+                save_gifs=bool(save_gifs),
+                episode=int(episode),
+                bucket=str(bucket),
+                gif_output_dir=gif_output_dir,
+                group_global_env_indices=group_env_indices,
+                gif_env_id_set=gif_env_id_set,
+                task_specs=list(group_info.get("task_specs", [])),
+            )
+            local_n = int(len(group_env_indices))
+            for local_i in range(local_n):
+                global_i = int(group_env_indices[local_i])
+                env_episode_rewards[global_i] = float(group_result["env_episode_rewards"][local_i])
+                env_captured[global_i] = bool(group_result["env_captured"][local_i])
+                env_capture_step[global_i] = int(group_result["env_capture_step"][local_i])
+                env_alive_rate[global_i] = float(group_result["env_alive_rate"][local_i])
+                env_active_hunter_count[global_i] = int(group_result["env_active_hunter_count"][local_i])
+                env_capture_escape_gap_angle[global_i] = float(group_result["env_capture_escape_gap_angle"][local_i])
+
+        return self._finalize_eval_metrics_and_logs(
+            total_num_steps=total_num_steps,
+            episode=episode,
+            bucket=bucket,
+            record_logs=record_logs,
+            save_gifs=bool(save_gifs),
+            gif_output_dir=gif_output_dir,
+            env_episode_rewards=env_episode_rewards,
+            env_captured=env_captured,
+            env_capture_step=env_capture_step,
+            env_alive_rate=env_alive_rate,
+            env_active_hunter_count=env_active_hunter_count,
+            env_capture_escape_gap_angle=env_capture_escape_gap_angle,
+        )
+
+    def _group_eval_env_indices_by_active_hunters(self, eval_envs):
+        """
+        功能:
+            将评估环境按任务规格中的hunter数量分组，并构造分组DummyVecEnv。
+        输入:
+            eval_envs (DummyVecEnv): 原始评估环境向量封装。
+        输出:
+            dict[int, dict]: {hunter_count: {"env_indices": [...], "vec_env": DummyVecEnv}}。
+        """
+        group_raw = {}
+        task_specs_all = getattr(eval_envs, "auto_reset_task_specs", None)
+        for env_i, env in enumerate(eval_envs.envs):
+            task_spec_i = None
+            if isinstance(task_specs_all, list) and int(env_i) < len(task_specs_all):
+                task_spec_i = task_specs_all[int(env_i)]
+
+            fallback_hunters = int(max(1, int(getattr(env, "num_hunters", self.train_max_hunters_num))))
+            if hasattr(env, "active_hunter_mask"):
+                mask = np.asarray(getattr(env, "active_hunter_mask"), dtype=bool).reshape(-1)
+                active_count = int(np.sum(mask[:fallback_hunters]))
+                fallback_hunters = int(max(1, active_count))
+
+            num_hunters = int(self._extract_hunter_count_from_task_spec(task_spec_i, fallback_hunters))
+            if int(num_hunters) not in group_raw:
+                group_raw[int(num_hunters)] = {"env_indices": [], "env_refs": [], "task_specs": []}
+            group_raw[int(num_hunters)]["env_indices"].append(int(env_i))
+            group_raw[int(num_hunters)]["env_refs"].append(env)
+            group_raw[int(num_hunters)]["task_specs"].append(task_spec_i)
+
+        out = {}
+        for hunter_count, meta in group_raw.items():
+            env_refs = list(meta["env_refs"])
+            group_vec = EvalDummyVecEnv([lambda env_ref=env_ref: env_ref for env_ref in env_refs])
+            out[int(hunter_count)] = {
+                "env_indices": list(meta["env_indices"]),
+                "vec_env": group_vec,
+                "task_specs": list(meta["task_specs"]),
+            }
+        return out
+
+    def _extract_hunter_count_from_task_spec(self, task_spec, fallback_hunters):
+        """
+        功能:
+            从任务规格中解析hunter数量（缺失或非法时回退到fallback）。
+        输入:
+            task_spec (dict | None): 单环境任务规格。
+            fallback_hunters (int): 回退hunter数量。
+        输出:
+            int: 有效hunter数量（最小为1）。
+        """
+        fallback = int(max(1, int(fallback_hunters)))
+        if not isinstance(task_spec, dict):
+            return fallback
+
+        for key in ("num_hunters", "hunter_count", "num_hunter", "hunters_num", "hunter_num"):
+            if key not in task_spec:
+                continue
+            try:
+                return int(max(1, int(task_spec[key])))
+            except Exception:
+                continue
+        return fallback
+
+    @torch.no_grad()
+    def _eval_group_envs(
+        self,
+        eval_envs_group,
+        num_hunters,
+        save_gifs=False,
+        episode=0,
+        bucket="fixed",
+        gif_output_dir=None,
+        group_global_env_indices=None,
+        gif_env_id_set=None,
+        task_specs=None,
+    ):
+        """
+        功能:
+            对同一hunter数量分组环境执行批量评估（共享policy批推理）。
+        输入:
+            eval_envs_group (DummyVecEnv): 分组后的评估环境。
+            num_hunters (int): 该分组统一hunter数量。
+        输出:
+            dict: 分组内逐环境指标数组。
+        """
+        obs = eval_envs_group.reset(mode="recover", task_specs=task_specs)
+        group_n = int(obs.shape[0])
+        num_agents = int(obs.shape[1])
+        target_index = int(num_agents - 1)
+        act_dim = int(eval_envs_group.action_space[0].shape[0])
+        num_hunters = int(max(1, int(num_hunters)))
+
+        controlled_agents = list(range(num_hunters))
+        if self.target_trainable:
+            controlled_agents.append(target_index)
+        eval_rnn_states = {
+            aid: np.zeros((group_n, self.recurrent_N, self.hidden_size), dtype=np.float32)
+            for aid in controlled_agents
+        }
+        eval_masks = {
+            aid: np.ones((group_n, 1), dtype=np.float32)
+            for aid in controlled_agents
+        }
+
+        finished = np.zeros(group_n, dtype=bool)
+        env_episode_rewards = np.zeros(group_n, dtype=np.float32)
+        env_captured = np.zeros(group_n, dtype=bool)
+        env_capture_step = np.full(group_n, -1, dtype=np.int32)
+        env_alive_rate = np.zeros(group_n, dtype=np.float32)
+        env_active_hunter_count = np.full(group_n, int(num_hunters), dtype=np.int32)
+        env_capture_escape_gap_angle = np.full(group_n, np.nan, dtype=np.float32)
+        last_infos = [None for _ in range(group_n)]
+        save_gifs = bool(save_gifs)
+        if group_global_env_indices is None:
+            group_global_env_indices = list(range(group_n))
+        gif_env_id_set = set() if gif_env_id_set is None else set(gif_env_id_set)
+        tracked_local_ids = set()
+        if save_gifs:
+            for local_i, global_i in enumerate(group_global_env_indices):
+                if int(global_i) in gif_env_id_set:
+                    tracked_local_ids.add(int(local_i))
+            eval_envs_group.capture_terminal_frame = True
+        frames_per_env = {int(local_i): [] for local_i in tracked_local_ids}
+        gif_saved = {int(local_i): False for local_i in tracked_local_ids}
+        out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
+        if save_gifs and len(tracked_local_ids) > 0:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for local_i in tracked_local_ids:
+                frame0 = eval_envs_group.render(
+                    mode="rgb_array",
+                    env_id=int(local_i),
+                    title=f"Eval({str(bucket)}) Episode {int(episode)}",
+                )
+                if isinstance(frame0, np.ndarray):
+                    frames_per_env[int(local_i)].append(frame0.copy())
+
+        for eval_step in range(self.eval_episode_length):
+            # self._print_timed("[Eval-group] step {}/{} ".format(int(eval_step), self.eval_episode_length))
+
+            active_idx = np.where(np.logical_not(finished))[0]
+            if active_idx.size == 0:
+                break
+
+            actions_env = np.zeros((group_n, num_agents, act_dim), dtype=np.float32)
+            for agent_id in controlled_agents:
+                role = "target" if (agent_id == target_index and self.target_trainable) else "hunter"
+                trainer = self.role_trainers[role]
+                trainer.prep_rollout()
+                eval_action, next_eval_rnn_state = trainer.policy.act(
+                    obs[active_idx, agent_id, :],
+                    eval_rnn_states[agent_id][active_idx],
+                    eval_masks[agent_id][active_idx],
+                    deterministic=True,
+                )
+                actions_env[active_idx, agent_id, :] = _t2n(eval_action)
+                eval_rnn_states[agent_id][active_idx] = _t2n(next_eval_rnn_state)
+
+            next_obs, rewards, dones, infos = eval_envs_group.step(actions_env)
+            infos = infos if infos is not None else np.array([[] for _ in range(group_n)], dtype=object)
+
+            for idx in active_idx:
+                env_infos = infos[int(idx)] if int(idx) < len(infos) else []
+                last_infos[int(idx)] = env_infos
+                if len(env_infos) > 0:
+                    env_active_hunter_count[int(idx)] = int(
+                        self._extract_active_hunter_count(env_infos, max_hunters_num=int(num_hunters))
+                    )
+
+                hunter_step_rewards = rewards[int(idx), : int(num_hunters), 0].astype(np.float32)
+                env_episode_rewards[int(idx)] += float(np.sum(hunter_step_rewards) / max(1, int(num_hunters)))
+
+                target_info = env_infos[target_index] if (len(env_infos) > target_index) else {}
+                metric_valid = bool(target_info.get("max_escape_gap_metric_valid", False))
+                metric_angle = float(target_info.get("max_escape_gap_angle", float("nan")))
+                if (not bool(env_captured[int(idx)])) and any(
+                    bool(agent_info.get("captured", False)) for agent_info in env_infos
+                ):
+                    env_captured[int(idx)] = True
+                    env_capture_step[int(idx)] = int(eval_step + 1)
+                    if metric_valid and np.isfinite(metric_angle):
+                        env_capture_escape_gap_angle[int(idx)] = float(metric_angle)
+
+                done_env = bool(np.all(dones[int(idx)]))
+                for agent_id in controlled_agents:
+                    done_agent = bool(dones[int(idx), agent_id])
+                    eval_masks[agent_id][int(idx), 0] = 0.0 if done_agent else 1.0
+                    if done_agent:
+                        eval_rnn_states[agent_id][int(idx)] = 0.0
+                if done_env:
+                    finished[int(idx)] = True
+                    env_alive_rate[int(idx)] = float(
+                        self._compute_hunter_alive_rate(env_infos, max_hunters_num=int(num_hunters))
+                    )
+                    if save_gifs and int(idx) in tracked_local_ids and (not bool(gif_saved[int(idx)])):
+                        terminal_frame = self._extract_terminal_frame(env_infos)
+                        if isinstance(terminal_frame, np.ndarray):
+                            frames_per_env[int(idx)].append(terminal_frame.copy())
+                        global_env_id = int(group_global_env_indices[int(idx)])
+                        gif_path = out_dir / f"e-{str(bucket)}-{int(episode)}-env-{int(global_env_id)}.gif"
+                        self._save_gif(
+                            frames_per_env[int(idx)],
+                            gif_path,
+                            episode_id=int(episode),
+                            capture_step=None if int(env_capture_step[int(idx)]) <= 0 else int(env_capture_step[int(idx)]),
+                            alive_rate=float(env_alive_rate[int(idx)]),
+                        )
+                        frames_per_env[int(idx)] = []
+                        gif_saved[int(idx)] = True
+
+            if save_gifs and (eval_step + 1) % self.gif_frame_interval == 0:
+                for local_i in tracked_local_ids:
+                    if bool(finished[int(local_i)]):
+                        continue
+                    frame = eval_envs_group.render(
+                        mode="rgb_array",
+                        env_id=int(local_i),
+                        title=f"Eval({str(bucket)}) Episode {int(episode)}",
+                    )
+                    if isinstance(frame, np.ndarray):
+                        frames_per_env[int(local_i)].append(frame.copy())
+
+            obs = next_obs
+
+        for idx in range(group_n):
+            if float(env_alive_rate[int(idx)]) > 0.0:
+                continue
+            env_infos = last_infos[int(idx)]
+            if env_infos is None or len(env_infos) == 0:
+                continue
+            env_alive_rate[int(idx)] = float(
+                self._compute_hunter_alive_rate(env_infos, max_hunters_num=int(num_hunters))
+            )
+            if save_gifs and int(idx) in tracked_local_ids and (not bool(gif_saved[int(idx)])):
+                global_env_id = int(group_global_env_indices[int(idx)])
+                gif_path = out_dir / f"e-{str(bucket)}-{int(episode)}-env-{int(global_env_id)}.gif"
+                self._save_gif(
+                    frames_per_env[int(idx)],
+                    gif_path,
+                    episode_id=int(episode),
+                    capture_step=None if int(env_capture_step[int(idx)]) <= 0 else int(env_capture_step[int(idx)]),
+                    alive_rate=float(env_alive_rate[int(idx)]),
+                )
+                frames_per_env[int(idx)] = []
+                gif_saved[int(idx)] = True
+
+        return {
+            "env_episode_rewards": env_episode_rewards,
+            "env_captured": env_captured,
+            "env_capture_step": env_capture_step,
+            "env_alive_rate": env_alive_rate,
+            "env_active_hunter_count": env_active_hunter_count,
+            "env_capture_escape_gap_angle": env_capture_escape_gap_angle,
+        }
+
+    def _finalize_eval_metrics_and_logs(
+        self,
+        total_num_steps,
+        episode,
+        bucket,
+        record_logs,
+        save_gifs,
+        gif_output_dir,
+        env_episode_rewards,
+        env_captured,
+        env_capture_step,
+        env_alive_rate,
+        env_active_hunter_count,
+        env_capture_escape_gap_angle,
+    ):
+        """
+        功能:
+            汇总评估结果并写入日志/TB/分桶曲线。
+        输入:
+            total_num_steps (int): 当前累计环境步数。
+            episode (int): 当前训练episode编号。
+            bucket (str): 评估桶名称。
+            record_logs (bool): 是否写TB与CSV。
+            save_gifs (bool): 是否打印GIF摘要日志。
+            gif_output_dir (str | Path | None): GIF输出目录。
+            env_* (np.ndarray): 各环境评估原始指标数组。
+        输出:
+            dict: evaluation指标字典。
+        """
+        n_env = int(np.asarray(env_episode_rewards).shape[0])
+        total_eval_episodes = int(n_env)
+        captured_episodes = int(np.sum(env_captured))
+        capture_rate = float(captured_episodes / max(1, total_eval_episodes))
+        eval_reward = float(np.mean(env_episode_rewards)) if total_eval_episodes > 0 else 0.0
+
+        captured_steps = [int(env_capture_step[i]) for i in range(n_env) if env_captured[i] and env_capture_step[i] > 0]
+        capture_steps = (
+            float(np.mean(captured_steps)) if len(captured_steps) > 0 else float(self.eval_episode_length)
+        )
+        captured_valid_mask = np.logical_and(env_captured, np.isfinite(env_capture_escape_gap_angle))
+        if bool(np.any(captured_valid_mask)):
+            max_escape_gap_angle = float(np.mean(env_capture_escape_gap_angle[captured_valid_mask]))
+        else:
+            max_escape_gap_angle = float("nan")
+
+        eval_metrics = {
+            "eval_reward": eval_reward,
+            "capture_rate": capture_rate,
+            "capture_steps": capture_steps,
+            "alive_rate": float(np.mean(env_alive_rate)) if total_eval_episodes > 0 else 0.0,
+            "max_escape_gap_angle": float(max_escape_gap_angle),
+            "captured_episodes": int(captured_episodes),
+            "total_eval_episodes": int(total_eval_episodes),
+        }
+        eval_metrics_by_hunters = self._build_eval_metrics_by_hunter_count(
+            env_episode_rewards=env_episode_rewards,
+            env_captured=env_captured,
+            env_capture_step=env_capture_step,
+            env_alive_rate=env_alive_rate,
+            env_active_hunter_count=env_active_hunter_count,
+            env_escape_gap_angle_mean=env_capture_escape_gap_angle,
+        )
+
+        self._print_metric_table(
+            "EvalMetrics[{}]".format(str(bucket)),
+            {
+                "episode": str(int(episode)),
+                "reward": "{:.4f}".format(eval_reward),
+                "capture_rate": "{:.4f}".format(capture_rate),
+                "capture_steps": "{:.2f}".format(capture_steps),
+                "alive_rate": "{:.4f}".format(float(eval_metrics["alive_rate"])),
+                "max_escape_gap": (
+                    "{:.4f}".format(float(max_escape_gap_angle))
+                    if np.isfinite(max_escape_gap_angle)
+                    else "NA"
+                ),
+                "captured_ep": str(int(captured_episodes)),
+                "total_eval_ep": str(int(total_eval_episodes)),
+            },
+        )
+
+        if record_logs:
+            self.writter.add_scalars(
+                f"eval/{str(bucket)}/eval_reward",
+                {f"eval/{str(bucket)}/eval_reward": eval_reward},
+                total_num_steps,
+            )
+            self.writter.add_scalars(
+                f"eval/{str(bucket)}/capture_rate",
+                {f"eval/{str(bucket)}/capture_rate": capture_rate},
+                total_num_steps,
+            )
+            self.writter.add_scalars(
+                f"eval/{str(bucket)}/capture_steps",
+                {f"eval/{str(bucket)}/capture_steps": capture_steps},
+                total_num_steps,
+            )
+            self.writter.add_scalars(
+                f"eval/{str(bucket)}/alive_rate",
+                {f"eval/{str(bucket)}/alive_rate": float(eval_metrics["alive_rate"])},
+                total_num_steps,
+            )
+            if np.isfinite(max_escape_gap_angle):
+                self.writter.add_scalars(
+                    f"eval/{str(bucket)}/max_escape_gap_angle",
+                    {f"eval/{str(bucket)}/max_escape_gap_angle": float(max_escape_gap_angle)},
+                    total_num_steps,
+                )
+
+            self._append_eval_csv(
+                episode=episode,
+                total_num_steps=total_num_steps,
+                bucket=bucket,
+                eval_reward=eval_reward,
+                capture_rate=capture_rate,
+                capture_steps=capture_steps,
+                alive_rate=float(eval_metrics["alive_rate"]),
+                max_escape_gap_angle=float(max_escape_gap_angle),
+                captured_episodes=captured_episodes,
+                total_eval_episodes=total_eval_episodes,
+            )
+            for hunter_count, grouped_metrics in sorted(eval_metrics_by_hunters.items(), key=lambda x: int(x[0])):
+                self._append_eval_csv(
+                    episode=episode,
+                    total_num_steps=total_num_steps,
+                    bucket=f"{str(bucket)}_num_hunters_{int(hunter_count)}",
+                    eval_reward=float(grouped_metrics["eval_reward"]),
+                    capture_rate=float(grouped_metrics["capture_rate"]),
+                    capture_steps=float(grouped_metrics["capture_steps"]),
+                    alive_rate=float(grouped_metrics["alive_rate"]),
+                    max_escape_gap_angle=float(grouped_metrics["max_escape_gap_angle"]),
+                    captured_episodes=int(grouped_metrics["captured_episodes"]),
+                    total_eval_episodes=int(grouped_metrics["total_eval_episodes"]),
+                )
+
+        if save_gifs:
+            out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
+            self._print_timed(
+                "[GIF] saved eval({}) gifs for episode {} to {}".format(
+                    str(bucket), int(episode), str(out_dir)
+                )
+            )
+
+        out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self._update_eval_hunter_bucket_plot(
+            episode=episode,
+            total_num_steps=total_num_steps,
+            bucket=bucket,
+            eval_metrics_by_hunters=eval_metrics_by_hunters,
+            output_dir=out_dir,
+        )
+        return eval_metrics
+
+    @torch.no_grad()
+    def serial_eval(
+        self,
+        total_num_steps,
+        episode,
+        eval_envs=None,
+        bucket="fixed",
+        save_gifs=False,
+        record_logs=True,
+        gif_output_dir=None,
+        gif_env_limit=None,
+    ):
+        """
+        功能:
             执行周期性evaluation（严格串行：每次仅评估一个fixed env），
             记录reward/捕获率/捕获步数；仅在save_gifs=True时保存GIF。
         输入:
@@ -1259,6 +1871,9 @@ class RoleBasedRunner(object):
         )
         try:
             for env_i in range(n_env):
+                self._print_timed(
+                    "[Eval] env {}/{} save".format(int(env_i), n_env)
+                    )
                 one_result = self.eval_one_env(
                     eval_envs=eval_envs,
                     env_i=int(env_i),
@@ -1496,6 +2111,11 @@ class RoleBasedRunner(object):
 
         # Step 2: rollout单环境episode。
         for eval_step in range(self.eval_episode_length):
+            if eval_step % 100 == 0:
+                self._print_timed(
+                        "[Eval-one-env] step {}/{}".format(int(eval_step), self.eval_episode_length)
+                        )
+            
             actions_env = np.zeros((num_agents, act_dim), dtype=np.float32)
             for agent_id in controlled_agents:
                 role = "target" if (agent_id == target_index and self.target_trainable) else "hunter"
@@ -1586,6 +2206,8 @@ class RoleBasedRunner(object):
                     frames.append(frame.copy())
             obs = next_obs
 
+        self._print_timed("[Eval-one-env] compute alive rate")
+                    
         # Step 3: 对未done环境补alive统计。
         if (last_infos is not None) and (len(last_infos) > 0) and float(alive_rate) <= 0.0:
             alive_rate = float(
@@ -1595,6 +2217,7 @@ class RoleBasedRunner(object):
                 )
             )
 
+        self._print_timed("[Eval-one-env] save gif")
         # Step 4: 单环境GIF落盘。
         if save_gif:
             out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)

@@ -8,6 +8,19 @@ Modified from OpenAI Baselines code to work with multi-agent envs
 
 import numpy as np
 
+
+def _attach_terminal_frame_once(env_infos, terminal_frame):
+    """
+    仅向单个agent_info写入terminal_frame，避免在所有agent重复存储同一图像。
+    """
+    if env_infos is None:
+        return
+    for agent_info in env_infos:
+        if isinstance(agent_info, dict):
+            agent_info["terminal_frame"] = terminal_frame
+            break
+
+
 # single env
 class DummyVecEnv():
     def __init__(self, env_fns):
@@ -49,9 +62,7 @@ class DummyVecEnv():
                 if self.capture_terminal_frame:
                     terminal_frame = self.envs[i].render(mode="rgb_array")
                     env_infos = infos[i]
-                    for agent_info in env_infos:
-                        if isinstance(agent_info, dict):
-                            agent_info["terminal_frame"] = terminal_frame
+                    _attach_terminal_frame_once(env_infos, terminal_frame)
                 task_spec_i = None
                 if self.auto_reset_task_specs is not None and i < len(self.auto_reset_task_specs):
                     task_spec_i = self.auto_reset_task_specs[i]
@@ -105,3 +116,88 @@ class DummyVecEnv():
                 self.envs[env_idx].render(mode=mode, **kwargs)
         else:
             raise NotImplementedError
+
+
+class EvalDummyVecEnv(DummyVecEnv):
+    def __init__(self, env_fns):
+        super().__init__(env_fns)
+        self._done_flags = np.zeros(self.num_envs, dtype=bool)
+        self._cached_obs = None
+        self._cached_rews = None
+        self._cached_dones = None
+        self._cached_infos = None
+
+    def reset(self, mode="recover", task_specs=None):
+        obs = super().reset(mode=mode, task_specs=task_specs)
+        self._done_flags = np.zeros(self.num_envs, dtype=bool)
+        self._cached_obs = np.asarray(obs).copy()
+        self._cached_rews = np.zeros((self.num_envs, len(self.action_space), 1), dtype=np.float32)
+        self._cached_dones = np.zeros((self.num_envs, len(self.action_space)), dtype=bool)
+        self._cached_infos = np.array(
+            [[{} for _ in range(len(self.action_space))] for _ in range(self.num_envs)],
+            dtype=object,
+        )
+        return obs
+
+    def step_wait(self):
+        obs_list = []
+        rews_list = []
+        dones_list = []
+        infos_list = []
+
+        for i, (action_i, env_i) in enumerate(zip(self.actions, self.envs)):
+            if bool(self._done_flags[i]):
+                obs_list.append(np.asarray(self._cached_obs[i]).copy())
+                rews_list.append(np.asarray(self._cached_rews[i]).copy())
+                dones_list.append(np.asarray(self._cached_dones[i]).copy())
+                infos_list.append(self._cached_infos[i])
+                continue
+
+            obs_i, rews_i, dones_i, infos_i = env_i.step(action_i)
+            done_flag = bool(np.all(dones_i))
+            if done_flag:
+                if self.capture_terminal_frame:
+                    terminal_frame = env_i.render(mode="rgb_array")
+                    _attach_terminal_frame_once(infos_i, terminal_frame)
+                self._done_flags[i] = True
+
+            self._cached_obs[i] = np.asarray(obs_i).copy()
+            self._cached_rews[i] = np.asarray(rews_i).copy()
+            self._cached_dones[i] = np.asarray(dones_i).copy()
+            self._cached_infos[i] = infos_i
+
+            obs_list.append(np.asarray(obs_i))
+            rews_list.append(np.asarray(rews_i))
+            dones_list.append(np.asarray(dones_i))
+            infos_list.append(infos_i)
+
+        self.actions = None
+        return (
+            np.asarray(obs_list),
+            np.asarray(rews_list),
+            np.asarray(dones_list),
+            np.asarray(infos_list, dtype=object),
+        )
+
+    def render(self, mode="human", env_id=None, **kwargs):
+        if env_id is None:
+            if mode == "rgb_array":
+                out = []
+                for i in range(self.num_envs):
+                    if bool(self._done_flags[i]):
+                        out.append(None)
+                    else:
+                        out.append(self.envs[i].render(mode=mode, **kwargs))
+                return np.array(out, dtype=object)
+            for i in range(self.num_envs):
+                if bool(self._done_flags[i]):
+                    continue
+                self.envs[i].render(mode=mode, **kwargs)
+            return None
+
+        env_idx = int(env_id)
+        if env_idx < 0 or env_idx >= self.num_envs:
+            raise IndexError(f"env_id out of range: {env_idx}")
+        if bool(self._done_flags[env_idx]):
+            return None
+        return self.envs[env_idx].render(mode=mode, **kwargs)

@@ -1106,6 +1106,81 @@ class TargetAgent(BaseAgent):
             "encircling_hunter_ids": list(encircling_hunter_ids),
         }
 
+    def compute_encircle_quality_from_gap_info(self, hunters: List[HunterAgent], gap_info: dict):
+        """
+        功能:
+            基于compute_max_escape_gap结果计算围捕质量诊断（ideal/worst/gap_open_ratio）。
+        输入:
+            hunters (List[HunterAgent]): Hunter列表。
+            gap_info (dict): compute_max_escape_gap返回的诊断字典。
+        输出:
+            dict: 围捕质量指标，含encircle_score/gap_open_ratio/hunter_quality_score等字段。
+        """
+        quality_info = {
+            "metric_valid": False,
+            "encircling_hunter_ids": [],
+            "encircle_score": 0.0,
+            "gap_open_score": 0.0,
+            "ideal_escape_gap_angle": 0.0,
+            "worst_escape_gap_angle": float(2.0 * np.pi),
+            "angle_blk": 0.0,
+            "gap_open_ratio": 1.0,
+            "hunter_quality_score": 0.0,
+            "target_quality_score": 0.0,
+        }
+        if not bool(gap_info.get("metric_valid", False)):
+            return quality_info
+
+        encircling_hunter_ids = list(gap_info.get("encircling_hunter_ids", []))
+        if len(encircling_hunter_ids) <= 1:
+            return quality_info
+
+        max_gap_angle = float(gap_info.get("max_gap_angle", 0.0))
+        n_encircle = int(len(encircling_hunter_ids))
+        rep_block_lengths = [
+            float(max(0.0, hunters[int(hid)].block_length))
+            for hid in encircling_hunter_ids
+            if int(hid) >= 0 and int(hid) < len(hunters)
+        ]
+        representative_block_length = float(np.mean(rep_block_lengths)) if len(rep_block_lengths) > 0 else 0.0
+        escape_radius = float(max(self.escape_dis, 1e-6))
+        angle_blk = float(2.0 * np.arctan(representative_block_length / escape_radius))
+        full_circle = float(2.0 * np.pi)
+        ideal_gap = float((full_circle - float(n_encircle) * angle_blk) / max(1, n_encircle))
+        ideal_gap = float(np.clip(ideal_gap, 0.0, full_circle))
+        worst_gap = float(full_circle - angle_blk)
+        worst_gap = float(np.clip(worst_gap, 0.0, full_circle))
+        if worst_gap <= ideal_gap + 1e-8:
+            gap_open_ratio = float(np.clip(max_gap_angle / full_circle, 0.0, 1.0))
+        else:
+            gap_open_ratio = float(
+                np.clip((max_gap_angle - ideal_gap) / max(1e-8, worst_gap - ideal_gap), 0.0, 1.0)
+            )
+
+        encircle_score = float(1.0 - gap_open_ratio)
+        worst_thr = float(np.clip(self.escape_gap_quality_worst_penalty_threshold, 0.0, 1.0))
+        if gap_open_ratio <= worst_thr:
+            hunter_quality_score = (worst_thr - gap_open_ratio) / max(worst_thr, 1e-8)
+        else:
+            hunter_quality_score = (worst_thr - gap_open_ratio) / max(1e-8, 1.0 - worst_thr)
+        target_quality_score = -hunter_quality_score
+
+        quality_info.update(
+            {
+                "metric_valid": True,
+                "encircling_hunter_ids": list(encircling_hunter_ids),
+                "encircle_score": float(encircle_score),
+                "gap_open_score": float(gap_open_ratio),
+                "ideal_escape_gap_angle": float(ideal_gap),
+                "worst_escape_gap_angle": float(worst_gap),
+                "angle_blk": float(angle_blk),
+                "gap_open_ratio": float(gap_open_ratio),
+                "hunter_quality_score": float(hunter_quality_score),
+                "target_quality_score": float(target_quality_score),
+            }
+        )
+        return quality_info
+
     def compute_escape_gap_reward(self, hunters: List[HunterAgent], active_hunter_mask: np.ndarray):
         """
         功能:
@@ -1137,59 +1212,34 @@ class TargetAgent(BaseAgent):
         if len(encircling_hunter_ids) <= 1:
             return 0.0, 0.0, 0.0, 0.0, [], gap_info
 
+        quality_info = self.compute_encircle_quality_from_gap_info(hunters, gap_info)
+        if not bool(quality_info.get("metric_valid", False)):
+            return 0.0, 0.0, 0.0, 0.0, [], gap_info
         max_gap_angle = float(gap_info.get("max_gap_angle", 0.0))
-        n_encircle = int(len(encircling_hunter_ids))
-        rep_block_lengths = [
-            float(max(0.0, hunters[int(hid)].block_length))
-            for hid in encircling_hunter_ids
-            if int(hid) >= 0 and int(hid) < len(hunters)
-        ]
-        representative_block_length = float(np.mean(rep_block_lengths)) if len(rep_block_lengths) > 0 else 0.0
-        escape_radius = float(max(self.escape_dis, 1e-6))
-
-        # 单个无人机可以产生的最小拦截角度
-        angle_blk = float(2.0 * np.arctan(representative_block_length / escape_radius))
-        full_circle = float(2.0 * np.pi)
-
-        # 理想情况下，参与包围的无人机能够产生的最大可逃脱角度（完美均匀分布）
-        ideal_gap = float((full_circle - float(n_encircle) * angle_blk) / max(1, n_encircle))
-        ideal_gap = float(np.clip(ideal_gap, 0.0, full_circle))
-
-        # 最坏情况下，所有无人机只在同一侧位置进行包围
-        worst_gap = float(full_circle - angle_blk)
-        worst_gap = float(np.clip(worst_gap, 0.0, full_circle))
-
-        # 当前逃脱角度，在 [ideal, worst] 区间中的位置映射到[0, 1]
-        if worst_gap <= ideal_gap + 1e-8:  # 理论上,worst_gap 应该 > ideal_gap
-            gap_open_ratio = float(np.clip(max_gap_angle / full_circle, 0.0, 1.0))
-        else:
-            gap_open_ratio = float(
-                np.clip((max_gap_angle - ideal_gap) / max(1e-8, worst_gap - ideal_gap), 0.0, 1.0)
-            )
-        
-        # gap_open_ratio越接近0，逃脱角度接近ideal角度, 包围质量越高
-        encircle_score = float(1.0 - gap_open_ratio)
-        gap_open_score = float(gap_open_ratio)
-
+        encircle_score = float(quality_info.get("encircle_score", 0.0))
+        gap_open_score = float(quality_info.get("gap_open_score", 0.0))
+        ideal_gap = float(quality_info.get("ideal_escape_gap_angle", 0.0))
+        worst_gap = float(quality_info.get("worst_escape_gap_angle", 0.0))
+        angle_blk = float(quality_info.get("angle_blk", 0.0))
+        gap_open_ratio = float(quality_info.get("gap_open_ratio", 1.0))
+        hunter_quality_score = float(quality_info.get("hunter_quality_score", 0.0))
+        target_quality_score = float(quality_info.get("target_quality_score", 0.0))
         worst_thr = float(self.escape_gap_quality_worst_penalty_threshold)
 
         # Step 1: 包围质量奖励
         if gap_open_ratio <= worst_thr:
             # 高质量包围，给予hunter奖励
-            hunter_quality_score = (worst_thr - gap_open_ratio) / worst_thr
             hunter_encircle_reward_value = (
                 float(self.escape_gap_encircle_hunter_reward_scale)
                 * float(hunter_quality_score)
                 )
         else:
             # 同侧拥挤包围，给予惩罚
-            hunter_quality_score = (worst_thr - gap_open_ratio) / (1 - worst_thr)
             hunter_encircle_reward_value = (
                 float(self.escape_gap_quality_worst_penalty_scale)
                 * float(hunter_quality_score)
                 )
 
-        target_quality_score = - hunter_quality_score
         target_encircle_reward_value = - hunter_encircle_reward_value
 
         # Step 2: 拦截奖励（仅依赖direction_score；Target速度过小时跳过）。
@@ -2769,36 +2819,50 @@ class UAVPursuitEnv(object):
             encircle_ids = self._get_capture_success_hunter_ids()
         return encircle_ids
 
-    def _compute_capture_encircle_quality(self, encircle_hunter_ids):
+    def _compute_capture_encircle_quality(self, encircle_hunter_ids, gap_info=None):
         """
         功能:
-            基于围捕Hunter在Target周围的角分布，计算包围质量分数（0~1）。
+            计算捕获时围捕质量指标（复用Target的escape-gap质量计算逻辑）。
         输入:
             encircle_hunter_ids (List[int]): 参与围捕的Hunter索引列表。
+            gap_info (Optional[dict]): 可选的max-gap诊断信息，缺省时自动计算。
         输出:
-            float: 包围质量分数，1表示角覆盖更均匀、最大缺口更小。
+            dict: 质量指标字典，含hunter_quality_score/encircle_score/gap_open_ratio等。
         """
+        quality_info = {
+            "metric_valid": False,
+            "encircling_hunter_ids": [],
+            "encircle_score": 0.0,
+            "gap_open_score": 0.0,
+            "gap_open_ratio": 1.0,
+            "hunter_quality_score": 0.0,
+            "target_quality_score": 0.0,
+        }
         if encircle_hunter_ids is None or len(encircle_hunter_ids) <= 1:
-            return 0.0
+            return quality_info
 
-        target_pos = np.asarray(self.target.position, dtype=np.float32)
-        angles = []
-        for hid in encircle_hunter_ids:
-            if hid < 0 or hid >= self.num_hunters:
-                continue
-            rel = np.asarray(self.hunters[int(hid)].position, dtype=np.float32) - target_pos
-            if float(np.linalg.norm(rel)) <= 1e-8:
-                continue
-            angles.append(float(np.arctan2(rel[1], rel[0])))
-        if len(angles) <= 1:
-            return 0.0
+        encircle_set = set(int(hid) for hid in encircle_hunter_ids)
+        if gap_info is None:
+            gap_info = self.target.compute_max_escape_gap(self.hunters, self.active_hunter_mask)
+        target_quality_info = self.target.compute_encircle_quality_from_gap_info(self.hunters, gap_info)
+        target_encircle_ids = list(target_quality_info.get("encircling_hunter_ids", []))
+        if len(target_encircle_ids) <= 1:
+            return quality_info
+        if len(encircle_set.intersection(set(target_encircle_ids))) <= 1:
+            return quality_info
 
-        angles = np.sort(np.asarray(angles, dtype=np.float32))
-        wrapped = np.concatenate([angles, angles[:1] + 2.0 * np.pi], axis=0)
-        gaps = np.diff(wrapped)
-        max_gap = float(np.max(gaps)) if gaps.size > 0 else float(2.0 * np.pi)
-        quality = 1.0 - float(np.clip(max_gap / (2.0 * np.pi), 0.0, 1.0))
-        return float(np.clip(quality, 0.0, 1.0))
+        quality_info.update(
+            {
+                "metric_valid": bool(target_quality_info.get("metric_valid", False)),
+                "encircling_hunter_ids": list(target_encircle_ids),
+                "encircle_score": float(target_quality_info.get("encircle_score", 0.0)),
+                "gap_open_score": float(target_quality_info.get("gap_open_score", 0.0)),
+                "gap_open_ratio": float(target_quality_info.get("gap_open_ratio", 1.0)),
+                "hunter_quality_score": float(target_quality_info.get("hunter_quality_score", 0.0)),
+                "target_quality_score": float(target_quality_info.get("target_quality_score", 0.0)),
+            }
+        )
+        return quality_info
 
     def _assign_capture_reward(self, capture_reward):
         """
@@ -2831,10 +2895,23 @@ class UAVPursuitEnv(object):
 
             encircle_ids = self._get_encircle_hunter_ids_for_capture()
             captor_set = set(int(hid) for hid in captor_ids)
-            support_ids = [int(hid) for hid in encircle_ids if int(hid) not in captor_set]
+            support_ids = []
+            for hid in encircle_ids:
+                hid = int(hid)
+                if hid in captor_set:
+                    continue
+                if hid < 0 or hid >= self.num_hunters:
+                    continue
+                if not bool(self.active_hunter_mask[hid]):
+                    continue
+                if not bool(self.hunters[hid].alive):
+                    continue
+                support_ids.append(int(hid))
             if len(support_ids) > 0:
-                quality = float(self._compute_capture_encircle_quality(encircle_ids))
-                if quality > 0.0:
+                gap_info = self.target.compute_max_escape_gap(self.hunters, self.active_hunter_mask)
+                quality_info = self._compute_capture_encircle_quality(encircle_ids, gap_info=gap_info)
+                hunter_quality_score = float(quality_info.get("hunter_quality_score", 0.0))
+                if abs(hunter_quality_score) > 1e-8:
                     target_pos = np.asarray(self.target.position, dtype=np.float32)
                     inv_dist = []
                     for hid in support_ids:
@@ -2848,7 +2925,14 @@ class UAVPursuitEnv(object):
                     weight_sum = float(np.max(inv_dist))
                     if weight_sum > 1e-8:
                         weights = inv_dist / weight_sum
-                        support_pool = float(self.hunter_capture_reward) * float(quality)
+                        if hunter_quality_score >= 0.0:
+                            support_pool = float(self.hunter_capture_reward) * float(hunter_quality_score)
+                        else:
+                            support_pool = (
+                                float(self.hunter_capture_reward)
+                                * float(self.target.escape_gap_quality_worst_penalty_scale)
+                                * float(hunter_quality_score)
+                            )
                         for idx, hid in enumerate(support_ids):
                             capture_reward[int(hid)] = float(support_pool) * float(weights[idx])
 
