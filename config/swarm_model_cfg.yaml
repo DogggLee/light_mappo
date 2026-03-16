@@ -1,0 +1,4 @@
+hunters:
+  成功率优先: /home/evan/projects/MARL/light_mappo/results/plots/models/hunters/new_escape.pt
+  任务耗时优先: /home/evan/projects/MARL/light_mappo/results/plots/models/hunters/old_escape.pt
+targets: {}

@@ -34,11 +34,13 @@ from utils.util import load_config
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    from tkinter import ttk, messagebox, filedialog, simpledialog
 except Exception:
     tk = None
     ttk = None
     messagebox = None
+    filedialog = None
+    simpledialog = None
 
 try:
     from algorithms.algorithm.rMAPPOPolicy import RMAPPOPolicy
@@ -1973,10 +1975,16 @@ class SwarmSimulationCore:
                 tgt = self.targets[tid]
                 if not tgt.alive:
                     continue
+
+                # 距离越远，代价越大
                 dist = float(np.linalg.norm(hunter.agent.position - tgt.last_seen_pos))
                 if dist > float(self.weights.max_assign_dist):
                     continue
+
+                # 处理优先级越高，代价越低
                 value_term = (10.0 - float(tgt.value))
+
+                
                 endurance_term = 0.0
                 if int(hunter.assigned_target) < 0 or int(hunter.assigned_target) == int(tid):
                     switch_term = 0.0
@@ -2115,16 +2123,21 @@ class SwarmSimGUI:
         无。
     """
 
-    def __init__(self, sim: SwarmSimulationCore):
+    def __init__(self, sim: SwarmSimulationCore, sim_config_path: Optional[Path] = None, model_config_path: Optional[Path] = None):
         if tk is None:
             raise RuntimeError("tkinter is unavailable in current environment")
         self.sim = sim
+        self.sim_config_path = sim_config_path
+        self.model_config_path = model_config_path
+        self.model_cfg = {"hunters": {}, "targets": {}}
         self.root = tk.Tk()
         self.root.title("Swarm Search + Pursuit Simulator")
         self.running = False
         self.use_cjk_font = self._configure_matplotlib_font()
+        self._load_model_config()
 
         self._build_ui()
+        self._refresh_model_dropdowns()
         self._schedule_loop()
 
     def _configure_matplotlib_font(self) -> bool:
@@ -2226,9 +2239,11 @@ class SwarmSimGUI:
         env_tab = ttk.Frame(notebook, padding=4)
         plan_tab = ttk.Frame(notebook, padding=4)
         assign_tab = ttk.Frame(notebook, padding=4)
+        pursuit_tab = ttk.Frame(notebook, padding=4)
         notebook.add(env_tab, text="环境配置")
         notebook.add(plan_tab, text="预规划")
         notebook.add(assign_tab, text="任务分配")
+        notebook.add(pursuit_tab, text="目标追捕")
 
         self._add_input(env_tab, "world_size", str(self.sim.mission.world_size))
         self._add_input(env_tab, "hunters", str(self.sim.mission.hunters))
@@ -2240,8 +2255,8 @@ class SwarmSimGUI:
         self._add_input(env_tab, "explorer_max_speed", str(self.sim.mission.explorer_max_speed))
         self._add_input(env_tab, "hunter_max_speed", str(self.sim.mission.hunter_max_speed))
         self._add_input(env_tab, "target_max_speed", str(self.sim.mission.target_max_speed))
-        self._add_input(env_tab, "plan_mode(in-loop/on-loop)", "on-loop")
-        self._add_input(env_tab, "assign_mode(in-loop/on-loop)", "on-loop")
+        self._add_select(env_tab, "plan_mode(in-loop/on-loop)", ["in-loop", "on-loop"], "on-loop")
+        self._add_select(env_tab, "assign_mode(in-loop/on-loop)", ["in-loop", "on-loop"], "on-loop")
 
         self._add_input(plan_tab, "overlap_rate", str(self.sim.mission.overlap_rate))
         self._add_input(plan_tab, "wait_mode(split/zone)", str(self.sim.mission.hunters_wait_mode))
@@ -2256,6 +2271,9 @@ class SwarmSimGUI:
         self._add_input(assign_tab, "explorer_endurance", str(self.sim.mission.explorer_total_endurance))
         self._add_input(assign_tab, "hunter_endurance", str(self.sim.mission.hunter_total_endurance))
         self._add_input(assign_tab, "idle_endurance_cost", str(self.sim.mission.endurance_idle_cost))
+
+        # pursuit tab: model selectors and management buttons
+        self._add_model_selectors(pursuit_tab)
 
         env_buttons = ttk.Frame(left)
         env_buttons.pack(fill=tk.X, pady=(8, 4))
@@ -2275,6 +2293,12 @@ class SwarmSimGUI:
         ttk.Button(assign_buttons, text="下发分配方案", command=self._on_apply_assignment).pack(side=tk.LEFT, padx=2)
         ttk.Button(assign_buttons, text="保存倾向", command=self._on_save_profile).pack(side=tk.LEFT, padx=2)
         ttk.Button(assign_buttons, text="加载倾向", command=self._on_load_profile).pack(side=tk.LEFT, padx=2)
+
+        save_buttons = ttk.Frame(left)
+        save_buttons.pack(fill=tk.X, pady=(4, 4))
+        ttk.Button(save_buttons, text="保存环境配置", command=self._on_save_env_config).pack(side=tk.LEFT, padx=2)
+        ttk.Button(save_buttons, text="保存预规划", command=self._on_save_plan_config).pack(side=tk.LEFT, padx=2)
+        ttk.Button(save_buttons, text="保存任务分配", command=self._on_save_assign_config).pack(side=tk.LEFT, padx=2)
 
         row_vis = ttk.Frame(left)
         row_vis.pack(fill=tk.X, pady=(4, 4))
@@ -2348,6 +2372,60 @@ class SwarmSimGUI:
         self.inputs[key] = var
         ttk.Entry(frame, textvariable=var, width=16).pack(side=tk.RIGHT)
 
+    def _add_select(self, parent, key: str, options: List[str], default: str):
+        """
+        功能:
+            添加下拉选择控件。
+        输入:
+            parent (ttk.Frame): 父容器。
+            key (str): 参数名。
+            options (List[str]): 选项列表。
+            default (str): 默认值。
+        输出:
+            无。
+        """
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=1)
+        ttk.Label(frame, text=key, width=18).pack(side=tk.LEFT)
+        var = tk.StringVar(value=default)
+        self.inputs[key] = var
+        combo = ttk.Combobox(frame, textvariable=var, values=options, state="readonly", width=14)
+        combo.pack(side=tk.RIGHT)
+
+    def _add_model_selectors(self, parent):
+        """
+        功能:
+            构建追捕模型选择与管理控件。
+        输入:
+            parent (ttk.Frame): 父容器。
+        输出:
+            无。
+        """
+        ttk.Label(parent, text="Hunter模型", anchor="w").pack(fill=tk.X, pady=(2, 2))
+        hunter_row = ttk.Frame(parent)
+        hunter_row.pack(fill=tk.X, pady=1)
+        self.hunter_model_var = tk.StringVar()
+        self.hunter_combo = ttk.Combobox(hunter_row, textvariable=self.hunter_model_var, state="readonly", width=24)
+        self.hunter_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Button(hunter_row, text="新增", command=lambda: self._on_add_model("hunters")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(hunter_row, text="删除", command=lambda: self._on_delete_model("hunters")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(hunter_row, text="重命名", command=lambda: self._on_rename_model("hunters")).pack(side=tk.LEFT, padx=2)
+
+        ttk.Label(parent, text="Target模型", anchor="w").pack(fill=tk.X, pady=(6, 2))
+        target_row = ttk.Frame(parent)
+        target_row.pack(fill=tk.X, pady=1)
+        self.target_model_var = tk.StringVar()
+        self.target_combo = ttk.Combobox(target_row, textvariable=self.target_model_var, state="readonly", width=24)
+        self.target_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Button(target_row, text="新增", command=lambda: self._on_add_model("targets")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(target_row, text="删除", command=lambda: self._on_delete_model("targets")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(target_row, text="重命名", command=lambda: self._on_rename_model("targets")).pack(side=tk.LEFT, padx=2)
+
+        btn_row = ttk.Frame(parent)
+        btn_row.pack(fill=tk.X, pady=(6, 2))
+        ttk.Button(btn_row, text="批量加载", command=self._on_batch_load_models).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="下发追捕模型", command=self._on_apply_pursuit_models).pack(side=tk.LEFT, padx=2)
+
     def _read_mission_and_weights(self) -> Tuple[MissionConfig, AssignmentWeights]:
         """
         功能:
@@ -2404,6 +2482,158 @@ class SwarmSimGUI:
             assign_mode = "on-loop"
         seed = int(float(self.inputs["seed"].get()))
         return plan_mode, assign_mode, seed
+
+    def _read_env_config(self) -> dict:
+        """
+        功能:
+            读取环境配置字段并返回swarm_sim.mission配置段。
+        输入:
+            无。
+        输出:
+            dict: mission配置字段。
+        """
+        mission, _ = self._read_mission_and_weights()
+        return {
+            "world_size": float(mission.world_size),
+            "dt": float(mission.dt),
+            "max_steps": int(mission.max_steps),
+            "hunters": int(mission.hunters),
+            "explorers": int(mission.explorers),
+            "targets": int(mission.targets),
+            "explorer_max_speed": float(mission.explorer_max_speed),
+            "hunter_max_speed": float(mission.hunter_max_speed),
+            "target_max_speed": float(mission.target_max_speed),
+            "explorer_total_endurance": float(mission.explorer_total_endurance),
+            "hunter_total_endurance": float(mission.hunter_total_endurance),
+            "endurance_idle_cost": float(mission.endurance_idle_cost),
+        }
+
+    def _read_plan_config(self) -> dict:
+        """
+        功能:
+            读取预规划配置字段并返回swarm_sim.mission配置段。
+        输入:
+            无。
+        输出:
+            dict: mission配置字段。
+        """
+        mission, _ = self._read_mission_and_weights()
+        return {
+            "overlap_rate": float(mission.overlap_rate),
+            "hunters_wait_mode": str(mission.hunters_wait_mode).lower(),
+            "explorer_track_speed_scale": float(mission.explorer_track_speed_scale),
+            "loss_timeout_steps": int(mission.loss_timeout_steps),
+        }
+
+    def _read_assign_config(self) -> dict:
+        """
+        功能:
+            读取任务分配配置字段并返回swarm_sim.assignment配置段。
+        输入:
+            无。
+        输出:
+            dict: assignment配置字段。
+        """
+        _, weights = self._read_mission_and_weights()
+        return {
+            "distance_weight": float(weights.distance_weight),
+            "value_weight": float(weights.value_weight),
+            "endurance_weight": float(weights.endurance_weight),
+            "switch_weight": float(weights.switch_weight),
+            "max_assign_dist": float(weights.max_assign_dist),
+        }
+
+    def _save_sim_config_section(self, mission_updates: Optional[dict] = None, assignment_updates: Optional[dict] = None):
+        """
+        功能:
+            将配置更新写入 --sim_config_file。
+        输入:
+            mission_updates (Optional[dict]): mission更新字段。
+            assignment_updates (Optional[dict]): assignment更新字段。
+        输出:
+            无。
+        """
+        if self.sim_config_path is None:
+            if messagebox is not None:
+                messagebox.showerror("保存失败", "未指定 --sim_config_file")
+            return
+        cfg_path = Path(self.sim_config_path)
+        payload = {}
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                payload = yaml.safe_load(f) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        swarm_sim = payload.get("swarm_sim", {})
+        if not isinstance(swarm_sim, dict):
+            swarm_sim = {}
+        mission_cfg = swarm_sim.get("mission", {})
+        if not isinstance(mission_cfg, dict):
+            mission_cfg = {}
+        assignment_cfg = swarm_sim.get("assignment", {})
+        if not isinstance(assignment_cfg, dict):
+            assignment_cfg = {}
+        if isinstance(mission_updates, dict):
+            mission_cfg.update(mission_updates)
+        if isinstance(assignment_updates, dict):
+            assignment_cfg.update(assignment_updates)
+        swarm_sim["mission"] = mission_cfg
+        swarm_sim["assignment"] = assignment_cfg
+        payload["swarm_sim"] = swarm_sim
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+
+    def _on_save_env_config(self):
+        """
+        功能:
+            保存环境配置到sim_config文件。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        try:
+            mission_updates = self._read_env_config()
+            self._save_sim_config_section(mission_updates=mission_updates)
+            self.status_var.set("已保存环境配置")
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("保存失败", str(e))
+
+    def _on_save_plan_config(self):
+        """
+        功能:
+            保存预规划配置到sim_config文件。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        try:
+            mission_updates = self._read_plan_config()
+            self._save_sim_config_section(mission_updates=mission_updates)
+            self.status_var.set("已保存预规划配置")
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("保存失败", str(e))
+
+    def _on_save_assign_config(self):
+        """
+        功能:
+            保存任务分配配置到sim_config文件。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        try:
+            assignment_updates = self._read_assign_config()
+            self._save_sim_config_section(assignment_updates=assignment_updates)
+            self.status_var.set("已保存任务分配配置")
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("保存失败", str(e))
 
     def _apply_modes(self):
         """
@@ -2570,14 +2800,10 @@ class SwarmSimGUI:
             self.status_var.set("No assignment")
             self._draw_scene()
             return
-        if str(self.sim.assign_mode).lower() == "in-loop":
-            self.sim.pending_assignment = assignments
-            self.running = False
-            self.sim.executing = False
-            self.status_var.set("Assignment pending")
-        else:
-            self.sim._apply_assignment(assignments)
-            self.status_var.set("Assignment applied")
+        self.sim.pending_assignment = assignments
+        self.running = False
+        self.sim.executing = False
+        self.status_var.set("Assignment pending")
         self._draw_scene()
 
     def _on_apply_assignment(self):
@@ -2594,7 +2820,8 @@ class SwarmSimGUI:
             return
         self.sim._apply_assignment(self.sim.pending_assignment)
         self.sim.pending_assignment = None
-        self.sim.dispatch_execute()
+        self.sim.executing = True
+        self.sim.planned = True
         self.running = True
         self.status_var.set("Assignment dispatched")
 
@@ -3176,6 +3403,195 @@ class SwarmSimGUI:
         self.pool_text.insert("1.0", text_val)
         self.pool_text.configure(state=tk.DISABLED)
 
+    def _load_model_config(self):
+        """
+        功能:
+            读取模型配置文件到内存。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if self.model_config_path is None:
+            return
+        cfg_path = Path(self.model_config_path)
+        if not cfg_path.exists():
+            return
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return
+        self.model_cfg["hunters"] = dict(data.get("hunters", {})) if isinstance(data.get("hunters", {}), dict) else {}
+        self.model_cfg["targets"] = dict(data.get("targets", {})) if isinstance(data.get("targets", {}), dict) else {}
+
+    def _save_model_config(self):
+        """
+        功能:
+            写入模型配置文件。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if self.model_config_path is None:
+            if messagebox is not None:
+                messagebox.showerror("保存失败", "未指定 --model_config_file")
+            return
+        cfg_path = Path(self.model_config_path)
+        payload = {
+            "hunters": self.model_cfg.get("hunters", {}),
+            "targets": self.model_cfg.get("targets", {}),
+        }
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+
+    def _refresh_model_dropdowns(self):
+        """
+        功能:
+            刷新模型下拉列表。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if not hasattr(self, "hunter_combo"):
+            return
+        hunter_names = list(self.model_cfg.get("hunters", {}).keys())
+        target_names = list(self.model_cfg.get("targets", {}).keys())
+        self.hunter_combo["values"] = hunter_names
+        self.target_combo["values"] = target_names
+        if self.hunter_model_var.get() not in hunter_names and len(hunter_names) > 0:
+            self.hunter_model_var.set(hunter_names[0])
+        if self.target_model_var.get() not in target_names and len(target_names) > 0:
+            self.target_model_var.set(target_names[0])
+
+    def _on_batch_load_models(self):
+        """
+        功能:
+            批量加载模型配置YAML。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if filedialog is None:
+            return
+        path = filedialog.askopenfilename(
+            title="选择模型配置YAML",
+            filetypes=[("YAML", "*.yaml *.yml")],
+        )
+        if not path:
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return
+        hunters = data.get("hunters", {})
+        targets = data.get("targets", {})
+        if isinstance(hunters, dict):
+            self.model_cfg["hunters"].update(hunters)
+        if isinstance(targets, dict):
+            self.model_cfg["targets"].update(targets)
+        self._save_model_config()
+        self._refresh_model_dropdowns()
+        self.status_var.set("批量加载完成")
+
+    def _on_add_model(self, kind: str):
+        """
+        功能:
+            新增模型路径。
+        输入:
+            kind (str): hunters/targets。
+        输出:
+            无。
+        """
+        if filedialog is None or simpledialog is None:
+            return
+        path = filedialog.askopenfilename(title="选择Actor模型")
+        if not path:
+            return
+        alias = simpledialog.askstring("模型别称", "请输入模型别称")
+        if not alias:
+            return
+        self.model_cfg.setdefault(kind, {})
+        self.model_cfg[kind][str(alias)] = str(path)
+        self._save_model_config()
+        self._refresh_model_dropdowns()
+        self.status_var.set(f"已添加{kind}模型")
+
+    def _on_delete_model(self, kind: str):
+        """
+        功能:
+            删除当前选择模型。
+        输入:
+            kind (str): hunters/targets。
+        输出:
+            无。
+        """
+        current = self.hunter_model_var.get() if kind == "hunters" else self.target_model_var.get()
+        if not current:
+            return
+        if current in self.model_cfg.get(kind, {}):
+            self.model_cfg[kind].pop(current, None)
+            self._save_model_config()
+            self._refresh_model_dropdowns()
+            self.status_var.set(f"已删除{kind}模型")
+
+    def _on_rename_model(self, kind: str):
+        """
+        功能:
+            重命名当前选择模型。
+        输入:
+            kind (str): hunters/targets。
+        输出:
+            无。
+        """
+        if simpledialog is None:
+            return
+        current = self.hunter_model_var.get() if kind == "hunters" else self.target_model_var.get()
+        if not current:
+            return
+        new_name = simpledialog.askstring("重命名", "请输入新别称")
+        if not new_name:
+            return
+        path = self.model_cfg.get(kind, {}).get(current, None)
+        if path is None:
+            return
+        self.model_cfg[kind].pop(current, None)
+        self.model_cfg[kind][str(new_name)] = str(path)
+        self._save_model_config()
+        self._refresh_model_dropdowns()
+        self.status_var.set(f"已重命名{kind}模型")
+
+    def _on_apply_pursuit_models(self):
+        """
+        功能:
+            下发当前选择的追捕模型。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        hunter_name = self.hunter_model_var.get()
+        target_name = self.target_model_var.get()
+        hunter_path = self.model_cfg.get("hunters", {}).get(hunter_name, None)
+        target_path = self.model_cfg.get("targets", {}).get(target_name, None)
+        if hunter_path:
+            self.sim.hunter_actor = LearnHunterActor(self.sim.cfg, hunter_path)
+        if target_path:
+            self.sim.target_actor = LearnTargetActor(self.sim.cfg, target_path, obs_dim=20)
+        # warm up hunter actor with current pursuit env if any
+        if self.sim.hunter_actor is not None and len(self.sim.pursuit_tasks) > 0:
+            any_env = next(iter(self.sim.pursuit_tasks.values())).env
+            team_sees_target = bool(any_env._team_sees_target())
+            obs_all = any_env._build_obs(team_sees_target=team_sees_target)
+            if obs_all is not None and len(obs_all) > 0:
+                self.sim.hunter_actor._ensure_policy(int(np.asarray(obs_all[0]).shape[0]))
+            for hid in range(len(self.sim.hunters)):
+                self.sim.hunter_actor.reset_hunter(int(hid))
+        self.status_var.set("追捕模型已下发")
+
     def run(self):
         """
         功能:
@@ -3208,6 +3624,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--target_actor", type=str, default=None, help="Optional actor for target learn policy")
     parser.add_argument("--hunter_actor", type=str, default=None, help="Optional actor for hunter pursuit policy")
+    parser.add_argument(
+        "--model_config_file",
+        type=str,
+        default=None,
+        help="Path to hunter/target actor model config yaml",
+    )
     return parser
 
 
@@ -3261,7 +3683,9 @@ def main():
         hunter_actor_path=args.hunter_actor,
         sim_overrides=sim_overrides,
     )
-    app = SwarmSimGUI(sim)
+    sim_cfg_path = Path(args.sim_config_file) if args.sim_config_file is not None else None
+    model_cfg_path = Path(args.model_config_file) if args.model_config_file is not None else None
+    app = SwarmSimGUI(sim, sim_config_path=sim_cfg_path, model_config_path=model_cfg_path)
     app.run()
 
 

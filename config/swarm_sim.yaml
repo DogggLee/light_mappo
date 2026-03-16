@@ -1,30 +1,34 @@
 swarm_sim:
   mission:
-    world_size: 300
+    world_size: 300.0
     dt: 0.1
     max_steps: 3000
-    hunters: 30
-    explorers: 10
-    targets: 5
+    hunters: 50
+    explorers: 7
+    targets: 20
     overlap_rate: 0.2
-    hunters_wait_mode: split  # Choices: [split, zone]
+    hunters_wait_mode: split
     explorer_track_speed_scale: 1.2
     loss_timeout_steps: 40
     target_min_init_separation: 8.0
     explorer_total_endurance: 12000.0
     hunter_total_endurance: 12000.0
     endurance_idle_cost: 0.2
-
+    explorer_max_speed: 8.0
+    hunter_max_speed: 8.0
+    target_max_speed: 8.0
   target:
-    policy_choices: [random, patrol, escape]
+    policy_choices:
+    - random
+    - patrol
+    - escape
     policy_probs:
       random: 0.4
       patrol: 0.3
       escape: 0.3
-
   assignment:
     distance_weight: 1.0
     value_weight: 2.0
     endurance_weight: 1.0
-    switch_weight: 0.5
+    switch_weight: 20.0
     max_assign_dist: 250.0
