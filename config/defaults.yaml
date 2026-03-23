@@ -39,6 +39,7 @@ env:
   target_patrol_path: datasets/train_patrol_routes.json
   target_patrol_names: ["square", "ring"]
   target_switch_interval: 10
+  target_random_action_update_steps: 50
   target_boundary_avoid_enable: true
   target_boundary_influence_ratio: 0.30
   target_boundary_enter_ratio: 0.15

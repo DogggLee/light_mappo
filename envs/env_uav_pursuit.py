@@ -734,6 +734,7 @@ class TargetAgent(BaseAgent):
 
         wall_vec = np.zeros(2, dtype=np.float32)
         weights = []
+        
         for d, normal in zip(wall_dists, wall_normals):
             ratio = float(np.clip((inf - float(d)) / inf, 0.0, 1.0))
             weight = ratio * ratio
@@ -820,15 +821,22 @@ class TargetAgent(BaseAgent):
         hunter_repulse = np.zeros(2, dtype=np.float32)
         has_active_hunter = False
         hunter_repulse_power = 2.0
+
+        dists = []
         for hid, hunter in enumerate(safe_hunters):
             is_active = bool(safe_mask[hid]) if hid < len(safe_mask) else True
             if (not is_active) or (not bool(hunter.alive)):
                 continue
             has_active_hunter = True
+
+            # rel: Hunter -> Target 向量
             rel = np.asarray(self.position, dtype=np.float32) - np.asarray(hunter.position, dtype=np.float32)
             dist = float(np.linalg.norm(rel))
+            
             if dist <= 1e-6:
                 continue
+            
+            # 远离hunter单位向量
             dir_away = rel / dist
             weight = 1.0 / max(dist ** hunter_repulse_power, 1e-6)
             hunter_repulse += (float(weight) * dir_away).astype(np.float32)
@@ -1348,6 +1356,7 @@ class UAVPursuitEnv(object):
         self.noisy_target_vel_std = float(env_cfg.noisy_target_vel_std)
         self.target_policy_source = str(env_cfg.target_policy_source).lower()
         self.target_switch_interval = int(env_cfg.target_switch_interval)
+        self.target_random_action_update_steps = int(env_cfg.target_random_action_update_steps)
         self.target_boundary_avoid_enable = bool(getattr(env_cfg, "target_boundary_avoid_enable", True))
         self.target_boundary_influence_ratio = float(getattr(env_cfg, "target_boundary_influence_ratio", 0.30))
         self.target_boundary_enter_ratio = float(getattr(env_cfg, "target_boundary_enter_ratio", 0.15))
@@ -1551,7 +1560,7 @@ class UAVPursuitEnv(object):
             max_turn_angle=float(target_cfg.max_turn_angle),
             min_turn_limit_velo=float(target_cfg.min_turn_limit_velo),
             policy_type=self.target_policy_source,
-            action_update_interval=max(1, self.target_switch_interval),
+            action_update_interval=max(1, self.target_random_action_update_steps),
             patrol_waypoints=patrol_routes[0] if patrol_routes else None,
             patrol_routes=patrol_routes,
             switch_interval=max(1, self.target_switch_interval),
@@ -2907,6 +2916,7 @@ class UAVPursuitEnv(object):
                 if not bool(self.hunters[hid].alive):
                     continue
                 support_ids.append(int(hid))
+
             if len(support_ids) > 0:
                 gap_info = self.target.compute_max_escape_gap(self.hunters, self.active_hunter_mask)
                 quality_info = self._compute_capture_encircle_quality(encircle_ids, gap_info=gap_info)

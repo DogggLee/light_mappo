@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: 2xEp_lrnPolicy_v3v1_esc8_deltaBase5_Zone
+  experiment_name: 2xEp_rndPolicy_v3v1_NoCompDeltaBase_Zone
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -17,7 +17,7 @@ env:
   coord_summary_obs_enable: false
   coord_topk_hunters: 4
 
-  target_policy_source: learn # Choices: ["learn", "patrol", "random", "greedy", "escape"]
+  target_policy_source: patrol # Choices: ["learn", "patrol", "random", "greedy", "escape"]
   target_switch_interval: 10
 
 Hunter:
@@ -51,7 +51,7 @@ reward:
   base_delta_norm_scale: 20.0
 
   # Escape Gap
-  escape_gap_enable: true
+  escape_gap_enable: false
   escape_gap_hunter_reward_scale: 8.0
   escape_gap_target_reward_scale: 5.0
   # 新版拆分项：包围质量reward（基于encircle_score / gap_open_score）
@@ -67,7 +67,7 @@ reward:
   # Capture reward
   hunter_capture_reward: 15.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: encircle  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: team  # Choices: ["team", "alone", "encircle"]
 
   # Speed Penalty
   speed_penalty: 0.3
@@ -100,7 +100,7 @@ eval:
 
 domain_randomization:
   train_split:
-    enable: false
+    enable: true
     regen_interval_episode: 20
     regen_prob: 1.0
     hunter_count_choices: [1, 2, 3]
