@@ -257,7 +257,7 @@ class ObsVisApp:
         ttk.Combobox(
             row,
             textvariable=self.target_policy_var,
-            values=["learn", "random", "patrol"],
+            values=["learn", "random", "patrol", "escape"],
             width=14,
             state="readonly",
         ).pack(side=tk.LEFT, padx=(6, 0))
