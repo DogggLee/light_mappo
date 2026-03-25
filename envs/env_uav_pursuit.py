@@ -414,6 +414,8 @@ class TargetAgent(BaseAgent):
         boundary_corner_tangent_gain: float = 0.8,
         boundary_smooth_alpha: float = 0.25,
         boundary_lookahead_steps: int = 5,
+        hunter_repulse_power: float = 2.0,
+        wall_repulse_power: float = 2.0,
     ):
         """
         功能:
@@ -453,6 +455,8 @@ class TargetAgent(BaseAgent):
             boundary_corner_tangent_gain (float): 角落切向滑移增益。
             boundary_smooth_alpha (float): 动作EMA平滑系数（0~1）。
             boundary_lookahead_steps (int): 多步前瞻步数。
+            hunter_repulse_power (float): escape策略Hunter斥力幂指数。
+            wall_repulse_power (float): 墙面斥力幂指数。
         输出:
             无。
         """
@@ -497,6 +501,8 @@ class TargetAgent(BaseAgent):
         self.boundary_corner_tangent_gain = float(max(0.0, boundary_corner_tangent_gain))
         self.boundary_smooth_alpha = float(np.clip(boundary_smooth_alpha, 0.0, 1.0))
         self.boundary_lookahead_steps = int(max(1, boundary_lookahead_steps))
+        self.hunter_repulse_power = float(max(0.0, hunter_repulse_power))
+        self.wall_repulse_power = float(max(0.0, wall_repulse_power))
         self.boundary_mode_active = False
         self.last_boundary_action = np.zeros(2, dtype=np.float32)
         self.route_episode_count = 0
@@ -637,6 +643,7 @@ class TargetAgent(BaseAgent):
         wall_vec, corner_weight = self._build_wall_avoidance_vector(
             ref_pos=ref_pos,
             influence_dist=influence_dist,
+            repulse_power=float(self.wall_repulse_power),
         )
         wall_norm = float(np.linalg.norm(wall_vec))
         if wall_norm <= 1e-8:
@@ -705,25 +712,27 @@ class TargetAgent(BaseAgent):
                 min_pos = pos.copy()
         return float(min_dist), np.asarray(min_pos, dtype=np.float32)
 
-    def _build_wall_avoidance_vector(self, ref_pos: np.ndarray, influence_dist: float):
+    def _build_wall_avoidance_vector(
+        self,
+        ref_pos: np.ndarray,
+        influence_dist: float,
+        repulse_power: float,
+    ):
         """
         功能:
             计算参考位置下的墙面斥力向量与角落权重。
         输入:
             ref_pos (np.ndarray): 参考位置，shape=(2,)。
             influence_dist (float): 边界影响范围（米）。
+            repulse_power (float): 斥力幂指数。
         输出:
             tuple[np.ndarray, float]: (法向斥力向量, 角落权重[0,1])。
         """
-        ws = float(max(1e-6, self.world_size))
-        p = np.asarray(ref_pos, dtype=np.float32)
-        inf = float(max(1e-6, influence_dist))
-
         wall_dists = [
-            float(ws - float(p[0])),  # right
-            float(ws + float(p[0])),  # left
-            float(ws - float(p[1])),  # top
-            float(ws + float(p[1])),  # bottom
+            float(self.world_size - float(ref_pos[0])),  # right
+            float(self.world_size + float(ref_pos[0])),  # left
+            float(self.world_size - float(ref_pos[1])),  # top
+            float(self.world_size + float(ref_pos[1])),  # bottom
         ]
         wall_normals = [
             np.array([-1.0, 0.0], dtype=np.float32),
@@ -736,8 +745,8 @@ class TargetAgent(BaseAgent):
         weights = []
         
         for d, normal in zip(wall_dists, wall_normals):
-            ratio = float(np.clip((inf - float(d)) / inf, 0.0, 1.0))
-            weight = ratio * ratio
+            ratio = float(np.clip((influence_dist - float(d)) / influence_dist, 0.0, 1.0))
+            weight = ratio ** repulse_power
             weights.append(weight)
             wall_vec = wall_vec + float(weight) * normal
 
@@ -820,9 +829,8 @@ class TargetAgent(BaseAgent):
         # Step 1: 计算Hunter斥力（与Hunter连线反向，距离越近权重越大）。
         hunter_repulse = np.zeros(2, dtype=np.float32)
         has_active_hunter = False
-        hunter_repulse_power = 2.0
-
-        dists = []
+        hunter_repulse_power = float(self.hunter_repulse_power)
+        world_size = float(max(1e-6, self.world_size))
         for hid, hunter in enumerate(safe_hunters):
             is_active = bool(safe_mask[hid]) if hid < len(safe_mask) else True
             if (not is_active) or (not bool(hunter.alive)):
@@ -838,15 +846,19 @@ class TargetAgent(BaseAgent):
             
             # 远离hunter单位向量
             dir_away = rel / dist
-            weight = 1.0 / max(dist ** hunter_repulse_power, 1e-6)
-            hunter_repulse += (float(weight) * dir_away).astype(np.float32)
+            if dist >= world_size:
+                continue
+
+            ratio = float(np.clip(1.0 - (dist / world_size), 0.0, 1.0))
+            weight = ratio ** hunter_repulse_power
+            hunter_repulse += (weight * dir_away).astype(np.float32)
 
         # Step 2: 计算边界斥力（离墙越近斥力越强）。
-        world_size = float(max(1e-6, self.world_size))
         influence_dist = float(np.clip(self.boundary_influence_ratio, 0.01, 1.0) * world_size)
         boundary_repulse, _ = self._build_wall_avoidance_vector(
             ref_pos=np.asarray(self.position, dtype=np.float32),
             influence_dist=influence_dist,
+            repulse_power=float(self.wall_repulse_power),
         )
 
         # Step 3: 合力方向作为escape目标方向。
@@ -1367,6 +1379,8 @@ class UAVPursuitEnv(object):
         )
         self.target_boundary_smooth_alpha = float(getattr(env_cfg, "target_boundary_smooth_alpha", 0.25))
         self.target_boundary_lookahead_steps = int(getattr(env_cfg, "target_boundary_lookahead_steps", 5))
+        self.target_hunter_repulse_power = float(getattr(env_cfg, "hunter_repulse_power", 2.0))
+        self.target_wall_repulse_power = float(getattr(env_cfg, "wall_repulse_power", 2.0))
 
         self.hunter_perception_radius = float(hunter_cfg.perception_radius)
         self.target_perception_radius = float(target_cfg.perception_radius)
@@ -1585,6 +1599,8 @@ class UAVPursuitEnv(object):
             boundary_corner_tangent_gain=float(self.target_boundary_corner_tangent_gain),
             boundary_smooth_alpha=float(self.target_boundary_smooth_alpha),
             boundary_lookahead_steps=int(self.target_boundary_lookahead_steps),
+            hunter_repulse_power=float(self.target_hunter_repulse_power),
+            wall_repulse_power=float(self.target_wall_repulse_power),
         )
         self.patrol_routes = patrol_routes
         self.default_target_policy_source = str(self.target_policy_source)
@@ -2101,7 +2117,7 @@ class UAVPursuitEnv(object):
         self._update_shared_target_memory(team_sees_target)
 
         captured = False
-        if self.target.alive and not target_collided:
+        if self.target.alive:
             captured = self._update_capture_counter()
             if captured:
                 # 捕获步先计算reward，再置target为死亡，确保该步escape_gap指标与奖励正常计算。
@@ -2133,7 +2149,7 @@ class UAVPursuitEnv(object):
         all_hunters_dead = not any(
             bool(self.active_hunter_mask[i]) and bool(h.alive) for i, h in enumerate(self.hunters)
         )
-        episode_end = timeout or captured or target_collided or all_hunters_dead
+        episode_end = timeout or captured or all_hunters_dead
 
         if episode_end:
             self.done[:] = True
@@ -2700,12 +2716,12 @@ class UAVPursuitEnv(object):
             规则:
             - Target不参与与其他agent的两两碰撞判定；
             - 所有active agent均参与边界风险与边界碰撞判定；
-            - 当Target为learn策略时，边界碰撞不死亡而是反弹，并施加边界碰撞惩罚。
+            - Target在任意策略下，边界碰撞均不死亡而是反弹，并施加边界碰撞惩罚。
         输入:
             无。
         输出:
             tuple:
-                - bool: Target是否发生碰撞。
+                - bool: Target是否发生边界碰撞事件。
                 - np.ndarray: 碰撞奖励分量，shape=(agent_num,)。
         """
         target_collided = False
@@ -2733,11 +2749,8 @@ class UAVPursuitEnv(object):
                 boundary_collision_agents.append(int(i))
                 if i == self.target_index:
                     collision_rewards[i] -= float(self.target_collision_penalty)
-                    if str(self.target.policy_type).lower() == "learn":
-                        self._bounce_target_from_boundary()
-                    else:
-                        disable[i] = True
-                        target_collided = True
+                    self._bounce_target_from_boundary()
+                    target_collided = True
                 else:
                     disable[i] = True
 
@@ -2951,7 +2964,7 @@ class UAVPursuitEnv(object):
     def _bounce_target_from_boundary(self):
         """
         功能:
-            对learn策略Target执行边界反弹：位置拉回边界内并反射外向速度分量。
+            对Target执行边界反弹：位置拉回边界内并反射外向速度分量。
         输入:
             无。
         输出:

@@ -132,6 +132,24 @@ def _build_target_learn_eval_specs(eval_task_specs):
     return out
 
 
+def _override_eval_specs_hunters_in_zone(eval_task_specs, hunters_in_zone):
+    """
+    基于固定评估任务列表，统一覆盖hunters_in_zone字段。
+
+    输入:
+        eval_task_specs (list[dict]): 固定评估任务列表。
+        hunters_in_zone (bool): 统一覆盖后的zone模式。
+    输出:
+        list[dict]: 覆盖hunters_in_zone后的新任务列表。
+    """
+    out = []
+    for spec in eval_task_specs:
+        s = dict(spec)
+        s["hunters_in_zone"] = bool(hunters_in_zone)
+        out.append(s)
+    return out
+
+
 def _infer_max_num_hunters_from_eval_tasks(eval_task_specs, fallback_max_hunters_num):
     """
     从固定评估任务中推断所需的最大hunter数量。
@@ -471,30 +489,77 @@ def main(args):
 
         # Step 8: 构建环境
         envs = make_train_env(merged_cfg, train_max_hunters_num=train_max_hunters_num)
-        eval_envs = (
-            make_eval_env(
-                merged_cfg,
-                eval_task_specs,
-                eval_max_hunters_num=eval_max_hunters_num,
-            )
-            if bool(merged_cfg.eval.use_eval)
-            else None
-        )
+        eval_envs = None
+        eval_envs_zone_false = None
+        eval_envs_zone_true = None
         eval_envs_target_learn = None
-        if bool(merged_cfg.eval.use_eval) and str(merged_cfg.env.target_policy_source).lower() == "learn":
-            eval_task_specs_target_learn = _build_target_learn_eval_specs(eval_task_specs)
-            eval_envs_target_learn = make_eval_env(
-                merged_cfg,
-                eval_task_specs_target_learn,
-                eval_max_hunters_num=eval_max_hunters_num,
-            )
+        eval_envs_target_learn_zone_false = None
+        eval_envs_target_learn_zone_true = None
+        if bool(merged_cfg.eval.use_eval):
+            use_dual_zone_eval = bool(from_external_file) and (eval_task_specs is not None)
+            if use_dual_zone_eval:
+                eval_task_specs_zone_false = _override_eval_specs_hunters_in_zone(
+                    eval_task_specs,
+                    hunters_in_zone=False,
+                )
+                eval_task_specs_zone_true = _override_eval_specs_hunters_in_zone(
+                    eval_task_specs,
+                    hunters_in_zone=True,
+                )
+                eval_envs_zone_false = make_eval_env(
+                    merged_cfg,
+                    eval_task_specs_zone_false,
+                    eval_max_hunters_num=eval_max_hunters_num,
+                )
+                eval_envs_zone_true = make_eval_env(
+                    merged_cfg,
+                    eval_task_specs_zone_true,
+                    eval_max_hunters_num=eval_max_hunters_num,
+                )
+                eval_envs = eval_envs_zone_false
+
+                if str(merged_cfg.env.target_policy_source).lower() == "learn":
+                    eval_task_specs_target_learn_zone_false = _build_target_learn_eval_specs(
+                        eval_task_specs_zone_false
+                    )
+                    eval_task_specs_target_learn_zone_true = _build_target_learn_eval_specs(
+                        eval_task_specs_zone_true
+                    )
+                    eval_envs_target_learn_zone_false = make_eval_env(
+                        merged_cfg,
+                        eval_task_specs_target_learn_zone_false,
+                        eval_max_hunters_num=eval_max_hunters_num,
+                    )
+                    eval_envs_target_learn_zone_true = make_eval_env(
+                        merged_cfg,
+                        eval_task_specs_target_learn_zone_true,
+                        eval_max_hunters_num=eval_max_hunters_num,
+                    )
+                    eval_envs_target_learn = eval_envs_target_learn_zone_false
+            else:
+                eval_envs = make_eval_env(
+                    merged_cfg,
+                    eval_task_specs,
+                    eval_max_hunters_num=eval_max_hunters_num,
+                )
+                if str(merged_cfg.env.target_policy_source).lower() == "learn":
+                    eval_task_specs_target_learn = _build_target_learn_eval_specs(eval_task_specs)
+                    eval_envs_target_learn = make_eval_env(
+                        merged_cfg,
+                        eval_task_specs_target_learn,
+                        eval_max_hunters_num=eval_max_hunters_num,
+                    )
 
         # Step 9: 构建Runner配置
         num_agents = int(train_max_hunters_num) + int(merged_cfg.env.num_explorers) + 1
         runner_cfg = {
             "envs": envs,
             "eval_envs": eval_envs,
+            "eval_envs_zone_false": eval_envs_zone_false,
+            "eval_envs_zone_true": eval_envs_zone_true,
             "eval_envs_target_learn": eval_envs_target_learn,
+            "eval_envs_target_learn_zone_false": eval_envs_target_learn_zone_false,
+            "eval_envs_target_learn_zone_true": eval_envs_target_learn_zone_true,
             "device": device,
             "run_dir": run_dir,
             "num_agents": num_agents,
@@ -538,10 +603,23 @@ def main(args):
 
         # Step 11: 收尾
         envs.close()
-        if bool(merged_cfg.eval.use_eval) and eval_envs is not envs:
-            eval_envs.close()
-        if bool(merged_cfg.eval.use_eval) and eval_envs_target_learn is not None and eval_envs_target_learn is not envs:
-            eval_envs_target_learn.close()
+        if bool(merged_cfg.eval.use_eval):
+            eval_env_candidates = [
+                eval_envs,
+                eval_envs_zone_false,
+                eval_envs_zone_true,
+                eval_envs_target_learn,
+                eval_envs_target_learn_zone_false,
+                eval_envs_target_learn_zone_true,
+            ]
+            closed_env_ids = {id(envs)}
+            for eval_env in eval_env_candidates:
+                if eval_env is None:
+                    continue
+                if id(eval_env) in closed_env_ids:
+                    continue
+                eval_env.close()
+                closed_env_ids.add(id(eval_env))
 
         runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
         runner.writter.close()

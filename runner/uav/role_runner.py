@@ -59,10 +59,21 @@ class RoleBasedRunner(object):
         self.cfg = merged_cfg
         self.envs = runner_cfg["envs"]
         self.eval_envs = runner_cfg["eval_envs"]
+        self.eval_envs_zone_false = runner_cfg["eval_envs_zone_false"] if "eval_envs_zone_false" in runner_cfg else None
+        self.eval_envs_zone_true = runner_cfg["eval_envs_zone_true"] if "eval_envs_zone_true" in runner_cfg else None
         self.eval_envs_target_learn = runner_cfg["eval_envs_target_learn"] if "eval_envs_target_learn" in runner_cfg else None
+        self.eval_envs_target_learn_zone_false = (
+            runner_cfg["eval_envs_target_learn_zone_false"] if "eval_envs_target_learn_zone_false" in runner_cfg else None
+        )
+        self.eval_envs_target_learn_zone_true = (
+            runner_cfg["eval_envs_target_learn_zone_true"] if "eval_envs_target_learn_zone_true" in runner_cfg else None
+        )
         self.device = runner_cfg["device"]
         self.run_dir = runner_cfg["run_dir"]
         self.num_agents = int(runner_cfg["num_agents"])
+        self.use_dual_zone_eval = (
+            self.eval_envs_zone_false is not None and self.eval_envs_zone_true is not None
+        )
 
         # Step 2: 读取训练主参数
         self.train_max_hunters_num = int(
@@ -130,6 +141,7 @@ class RoleBasedRunner(object):
             "reward": -np.inf,
             "capture_rate": -np.inf,
             "capture_steps": np.inf,
+            "capture_steps_objective": np.inf,
             "max_escape_gap_angle": np.inf,
         }
         self.best_eval_metrics_by_bucket = {
@@ -137,6 +149,7 @@ class RoleBasedRunner(object):
                 "eval_reward": -np.inf,
                 "capture_rate": -np.inf,
                 "capture_steps": np.inf,
+                "capture_steps_objective": np.inf,
                 "max_escape_gap_angle": np.inf,
             }
         }
@@ -581,30 +594,87 @@ class RoleBasedRunner(object):
                     )
                 )
 
-            # eval（单阶段：训练期间直接评估；若log_gif=True则仅保存前3个env的GIF）
+            # eval（训练期间周期评估；双zone模式下分别评估zone=false/true并以二者均值刷新fixed最优）
             if do_eval_this_episode:
-                fixed_metrics = self.eval(
-                    total_num_steps,
-                    episode,
-                    eval_envs=self.eval_envs,
-                    bucket="fixed",
-                    save_gifs=bool(self.log_gif),
-                    record_logs=True,
-                    gif_env_limit=3,
-                )
-                self._maybe_save_best_models(episode, fixed_metrics)
-
-                if self.eval_envs_target_learn is not None:
-                    target_learn_metrics = self.eval(
+                if self.use_dual_zone_eval:
+                    fixed_zone_false_metrics = self.eval(
                         total_num_steps,
                         episode,
-                        eval_envs=self.eval_envs_target_learn,
-                        bucket="target_learn",
+                        eval_envs=self.eval_envs_zone_false,
+                        bucket="fixed_zone_false",
                         save_gifs=bool(self.log_gif),
                         record_logs=True,
                         gif_env_limit=3,
                     )
-                    self._update_bucket_best_metrics("target_learn", target_learn_metrics)
+                    self._update_bucket_best_metrics("fixed_zone_false", fixed_zone_false_metrics)
+                    fixed_zone_true_metrics = self.eval(
+                        total_num_steps,
+                        episode,
+                        eval_envs=self.eval_envs_zone_true,
+                        bucket="fixed_zone_true",
+                        save_gifs=bool(self.log_gif),
+                        record_logs=True,
+                        gif_env_limit=3,
+                    )
+                    self._update_bucket_best_metrics("fixed_zone_true", fixed_zone_true_metrics)
+                    fixed_metrics = self._aggregate_eval_metrics_mean(
+                        [fixed_zone_false_metrics, fixed_zone_true_metrics]
+                    )
+                    self._maybe_save_best_models(episode, fixed_metrics)
+
+                    if (
+                        self.eval_envs_target_learn_zone_false is not None
+                        and self.eval_envs_target_learn_zone_true is not None
+                    ):
+                        target_learn_zone_false_metrics = self.eval(
+                            total_num_steps,
+                            episode,
+                            eval_envs=self.eval_envs_target_learn_zone_false,
+                            bucket="target_learn_zone_false",
+                            save_gifs=bool(self.log_gif),
+                            record_logs=True,
+                            gif_env_limit=3,
+                        )
+                        self._update_bucket_best_metrics(
+                            "target_learn_zone_false",
+                            target_learn_zone_false_metrics,
+                        )
+                        target_learn_zone_true_metrics = self.eval(
+                            total_num_steps,
+                            episode,
+                            eval_envs=self.eval_envs_target_learn_zone_true,
+                            bucket="target_learn_zone_true",
+                            save_gifs=bool(self.log_gif),
+                            record_logs=True,
+                            gif_env_limit=3,
+                        )
+                        self._update_bucket_best_metrics(
+                            "target_learn_zone_true",
+                            target_learn_zone_true_metrics,
+                        )
+                else:
+                    fixed_metrics = self.eval(
+                        total_num_steps,
+                        episode,
+                        eval_envs=self.eval_envs,
+                        bucket="fixed",
+                        save_gifs=bool(self.log_gif),
+                        record_logs=True,
+                        gif_env_limit=3,
+                    )
+                    self._maybe_save_best_models(episode, fixed_metrics)
+
+                    if self.eval_envs_target_learn is not None:
+                        target_learn_metrics = self.eval(
+                            total_num_steps,
+                            episode,
+                            eval_envs=self.eval_envs_target_learn,
+                            bucket="target_learn",
+                            save_gifs=bool(self.log_gif),
+                            record_logs=True,
+                            gif_env_limit=3,
+                        )
+                        self._update_bucket_best_metrics("target_learn", target_learn_metrics)
             if hasattr(self.envs, "capture_terminal_frame"):
                 self.envs.capture_terminal_frame = False
 
@@ -1673,10 +1743,20 @@ class RoleBasedRunner(object):
         captured_episodes = int(np.sum(env_captured))
         capture_rate = float(captured_episodes / max(1, total_eval_episodes))
         eval_reward = float(np.mean(env_episode_rewards)) if total_eval_episodes > 0 else 0.0
+        capture_step_arr = np.asarray(env_capture_step, dtype=np.int32).reshape(-1)
 
-        captured_steps = [int(env_capture_step[i]) for i in range(n_env) if env_captured[i] and env_capture_step[i] > 0]
+        captured_steps = [int(capture_step_arr[i]) for i in range(n_env) if env_captured[i] and capture_step_arr[i] > 0]
         capture_steps = (
             float(np.mean(captured_steps)) if len(captured_steps) > 0 else float(self.eval_episode_length)
+        )
+        capture_step_objective_values = [
+            int(capture_step_arr[i]) if (env_captured[i] and int(capture_step_arr[i]) > 0) else int(self.eval_episode_length)
+            for i in range(n_env)
+        ]
+        capture_steps_objective = (
+            float(np.mean(capture_step_objective_values))
+            if len(capture_step_objective_values) > 0
+            else float(self.eval_episode_length)
         )
         captured_valid_mask = np.logical_and(env_captured, np.isfinite(env_capture_escape_gap_angle))
         if bool(np.any(captured_valid_mask)):
@@ -1688,6 +1768,7 @@ class RoleBasedRunner(object):
             "eval_reward": eval_reward,
             "capture_rate": capture_rate,
             "capture_steps": capture_steps,
+            "capture_steps_objective": capture_steps_objective,
             "alive_rate": float(np.mean(env_alive_rate)) if total_eval_episodes > 0 else 0.0,
             "max_escape_gap_angle": float(max_escape_gap_angle),
             "captured_episodes": int(captured_episodes),
@@ -1709,6 +1790,7 @@ class RoleBasedRunner(object):
                 "reward": "{:.4f}".format(eval_reward),
                 "capture_rate": "{:.4f}".format(capture_rate),
                 "capture_steps": "{:.2f}".format(capture_steps),
+                "capture_steps_obj": "{:.2f}".format(capture_steps_objective),
                 "alive_rate": "{:.4f}".format(float(eval_metrics["alive_rate"])),
                 "max_escape_gap": (
                     "{:.4f}".format(float(max_escape_gap_angle))
@@ -1737,6 +1819,11 @@ class RoleBasedRunner(object):
                 total_num_steps,
             )
             self.writter.add_scalars(
+                f"eval/{str(bucket)}/capture_steps_objective",
+                {f"eval/{str(bucket)}/capture_steps_objective": capture_steps_objective},
+                total_num_steps,
+            )
+            self.writter.add_scalars(
                 f"eval/{str(bucket)}/alive_rate",
                 {f"eval/{str(bucket)}/alive_rate": float(eval_metrics["alive_rate"])},
                 total_num_steps,
@@ -1755,6 +1842,7 @@ class RoleBasedRunner(object):
                 eval_reward=eval_reward,
                 capture_rate=capture_rate,
                 capture_steps=capture_steps,
+                capture_steps_objective=capture_steps_objective,
                 alive_rate=float(eval_metrics["alive_rate"]),
                 max_escape_gap_angle=float(max_escape_gap_angle),
                 captured_episodes=captured_episodes,
@@ -1768,6 +1856,7 @@ class RoleBasedRunner(object):
                     eval_reward=float(grouped_metrics["eval_reward"]),
                     capture_rate=float(grouped_metrics["capture_rate"]),
                     capture_steps=float(grouped_metrics["capture_steps"]),
+                    capture_steps_objective=float(grouped_metrics.get("capture_steps_objective", grouped_metrics["capture_steps"])),
                     alive_rate=float(grouped_metrics["alive_rate"]),
                     max_escape_gap_angle=float(grouped_metrics["max_escape_gap_angle"]),
                     captured_episodes=int(grouped_metrics["captured_episodes"]),
@@ -1893,134 +1982,21 @@ class RoleBasedRunner(object):
         finally:
             self._close_eval_debug_plot(plot_ctx)
 
-        # Step 3: 汇总评估指标
-        total_eval_episodes = int(n_env)
-        captured_episodes = int(np.sum(env_captured))
-        capture_rate = float(captured_episodes / max(1, total_eval_episodes))
-        eval_reward = float(np.mean(env_episode_rewards)) if total_eval_episodes > 0 else 0.0
-
-        captured_steps = [int(env_capture_step[i]) for i in range(n_env) if env_captured[i] and env_capture_step[i] > 0]
-        capture_steps = (
-            float(np.mean(captured_steps)) if len(captured_steps) > 0 else float(self.eval_episode_length)
-        )
-        captured_valid_mask = np.logical_and(env_captured, np.isfinite(env_capture_escape_gap_angle))
-        if bool(np.any(captured_valid_mask)):
-            max_escape_gap_angle = float(np.mean(env_capture_escape_gap_angle[captured_valid_mask]))
-        else:
-            max_escape_gap_angle = float("nan")
-
-        eval_metrics = {
-            "eval_reward": eval_reward,
-            "capture_rate": capture_rate,
-            "capture_steps": capture_steps,
-            "alive_rate": float(np.mean(env_alive_rate)) if total_eval_episodes > 0 else 0.0,
-            "max_escape_gap_angle": float(max_escape_gap_angle),
-            "captured_episodes": int(captured_episodes),
-            "total_eval_episodes": int(total_eval_episodes),
-        }
-        eval_metrics_by_hunters = self._build_eval_metrics_by_hunter_count(
+        # Step 3: 复用统一汇总逻辑，确保与并行eval实现完全一致。
+        return self._finalize_eval_metrics_and_logs(
+            total_num_steps=total_num_steps,
+            episode=episode,
+            bucket=bucket,
+            record_logs=record_logs,
+            save_gifs=bool(save_gifs),
+            gif_output_dir=gif_output_dir,
             env_episode_rewards=env_episode_rewards,
             env_captured=env_captured,
             env_capture_step=env_capture_step,
             env_alive_rate=env_alive_rate,
             env_active_hunter_count=env_active_hunter_count,
-            env_escape_gap_angle_mean=env_capture_escape_gap_angle,
+            env_capture_escape_gap_angle=env_capture_escape_gap_angle,
         )
-
-        self._print_metric_table(
-            "EvalMetrics[{}]".format(str(bucket)),
-            {
-                "episode": str(int(episode)),
-                "reward": "{:.4f}".format(eval_reward),
-                "capture_rate": "{:.4f}".format(capture_rate),
-                "capture_steps": "{:.2f}".format(capture_steps),
-                "alive_rate": "{:.4f}".format(float(eval_metrics["alive_rate"])),
-                "max_escape_gap": (
-                    "{:.4f}".format(float(max_escape_gap_angle))
-                    if np.isfinite(max_escape_gap_angle)
-                    else "NA"
-                ),
-                "captured_ep": str(int(captured_episodes)),
-                "total_eval_ep": str(int(total_eval_episodes)),
-            },
-        )
-
-        # Step 4: 记录TB与CSV（可选）
-        if record_logs:
-            self.writter.add_scalars(
-                f"eval/{str(bucket)}/eval_reward",
-                {f"eval/{str(bucket)}/eval_reward": eval_reward},
-                total_num_steps,
-            )
-            self.writter.add_scalars(
-                f"eval/{str(bucket)}/capture_rate",
-                {f"eval/{str(bucket)}/capture_rate": capture_rate},
-                total_num_steps,
-            )
-            self.writter.add_scalars(
-                f"eval/{str(bucket)}/capture_steps",
-                {f"eval/{str(bucket)}/capture_steps": capture_steps},
-                total_num_steps,
-            )
-            self.writter.add_scalars(
-                f"eval/{str(bucket)}/alive_rate",
-                {f"eval/{str(bucket)}/alive_rate": float(eval_metrics["alive_rate"])},
-                total_num_steps,
-            )
-            if np.isfinite(max_escape_gap_angle):
-                self.writter.add_scalars(
-                    f"eval/{str(bucket)}/max_escape_gap_angle",
-                    {f"eval/{str(bucket)}/max_escape_gap_angle": float(max_escape_gap_angle)},
-                    total_num_steps,
-                )
-
-            self._append_eval_csv(
-                episode=episode,
-                total_num_steps=total_num_steps,
-                bucket=bucket,
-                eval_reward=eval_reward,
-                capture_rate=capture_rate,
-                capture_steps=capture_steps,
-                alive_rate=float(eval_metrics["alive_rate"]),
-                max_escape_gap_angle=float(max_escape_gap_angle),
-                captured_episodes=captured_episodes,
-                total_eval_episodes=total_eval_episodes,
-            )
-            for hunter_count, grouped_metrics in sorted(eval_metrics_by_hunters.items(), key=lambda x: int(x[0])):
-                self._append_eval_csv(
-                    episode=episode,
-                    total_num_steps=total_num_steps,
-                    bucket=f"{str(bucket)}_num_hunters_{int(hunter_count)}",
-                    eval_reward=float(grouped_metrics["eval_reward"]),
-                    capture_rate=float(grouped_metrics["capture_rate"]),
-                    capture_steps=float(grouped_metrics["capture_steps"]),
-                    alive_rate=float(grouped_metrics["alive_rate"]),
-                    max_escape_gap_angle=float(grouped_metrics["max_escape_gap_angle"]),
-                    captured_episodes=int(grouped_metrics["captured_episodes"]),
-                    total_eval_episodes=int(grouped_metrics["total_eval_episodes"]),
-                )
-
-        # Step 5: GIF在eval_one_env内逐环境即时写出；这里仅打印摘要。
-        if save_gifs:
-            out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
-            self._print_timed(
-                "[GIF] saved eval({}) gifs for episode {} to {} ({} envs)".format(
-                    str(bucket), int(episode), str(out_dir), int(len(gif_env_ids))
-                )
-            )
-
-        # Step 6: 始终保存“按hunter数量分桶”曲线图，不受log_gif控制。
-        out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        self._update_eval_hunter_bucket_plot(
-            episode=episode,
-            total_num_steps=total_num_steps,
-            bucket=bucket,
-            eval_metrics_by_hunters=eval_metrics_by_hunters,
-            output_dir=out_dir,
-        )
-
-        return eval_metrics
 
     @torch.no_grad()
     def eval_one_env(
@@ -2608,6 +2584,7 @@ class RoleBasedRunner(object):
                     "eval_reward",
                     "capture_rate",
                     "capture_steps",
+                    "capture_steps_objective",
                     "alive_rate",
                     "max_escape_gap_angle",
                     "captured_episodes",
@@ -2661,6 +2638,7 @@ class RoleBasedRunner(object):
         eval_reward,
         capture_rate,
         capture_steps,
+        capture_steps_objective,
         alive_rate,
         max_escape_gap_angle,
         captured_episodes,
@@ -2675,6 +2653,7 @@ class RoleBasedRunner(object):
             eval_reward (float): 评估平均reward。
             capture_rate (float): 捕获成功率。
             capture_steps (float): 平均捕获步数（仅成功episode）。
+            capture_steps_objective (float): 平均捕获代价步长（失败episode按eval_episode_length计）。
             alive_rate (float): 终止时hunter平均存活率（按激活hunter归一化）。
             max_escape_gap_angle (float): 最大潜在可逃脱空间夹角均值（弧度）。
             captured_episodes (int): 捕获成功episode数。
@@ -2693,6 +2672,7 @@ class RoleBasedRunner(object):
                     float(eval_reward),
                     float(capture_rate),
                     float(capture_steps),
+                    float(capture_steps_objective),
                     float(alive_rate),
                     float(max_escape_gap_angle),
                     int(captured_episodes),
@@ -2837,6 +2817,17 @@ class RoleBasedRunner(object):
                 if len(grouped_capture_steps) > 0
                 else float(self.eval_episode_length)
             )
+            grouped_capture_step_objective = []
+            for local_idx in np.where(mask)[0]:
+                if bool(captured_flags[local_idx]) and int(capture_steps[local_idx]) > 0:
+                    grouped_capture_step_objective.append(int(capture_steps[local_idx]))
+                else:
+                    grouped_capture_step_objective.append(int(self.eval_episode_length))
+            mean_capture_steps_objective = (
+                float(np.mean(grouped_capture_step_objective))
+                if len(grouped_capture_step_objective) > 0
+                else float(self.eval_episode_length)
+            )
             grouped_escape_angles = escape_gap_means[
                 np.logical_and(mask, np.logical_and(captured_flags, np.isfinite(escape_gap_means)))
             ]
@@ -2849,6 +2840,7 @@ class RoleBasedRunner(object):
                 "eval_reward": float(np.mean(rewards[mask])) if total_eval_episodes > 0 else 0.0,
                 "capture_rate": float(captured_episodes / max(1, total_eval_episodes)),
                 "capture_steps": float(mean_capture_steps),
+                "capture_steps_objective": float(mean_capture_steps_objective),
                 "alive_rate": float(np.mean(alive_rates[mask])) if total_eval_episodes > 0 else 0.0,
                 "max_escape_gap_angle": float(grouped_escape_angle_mean),
                 "captured_episodes": int(captured_episodes),
@@ -2867,6 +2859,10 @@ class RoleBasedRunner(object):
         """
         # Step 1: learn桶兼容target_learn命名。
         bucket_name = str(bucket).lower()
+        if bucket_name == "target_learn_zone_false":
+            return "learn_zone_false"
+        if bucket_name == "target_learn_zone_true":
+            return "learn_zone_true"
         if bucket_name in ("target_learn", "learn"):
             return "learn"
         return bucket_name
@@ -2899,7 +2895,7 @@ class RoleBasedRunner(object):
         canonical_bucket = self._canonical_eval_bucket_name(bucket)
         self.eval_hunter_bucket_metrics_cache[cache_key][canonical_bucket] = dict(eval_metrics_by_hunters)
 
-        # Step 2: 基于当前可用桶（fixed/learn）绘制并覆盖保存同名图。
+        # Step 2: 基于当前可用桶绘制并覆盖保存同名图。
         bucket_to_metrics = self.eval_hunter_bucket_metrics_cache[cache_key]
         metrics_order = [
             "eval_reward",
@@ -2917,8 +2913,20 @@ class RoleBasedRunner(object):
         }
         bucket_style = {
             "fixed": {"label": "fixed", "color": "#1f77b4", "marker": "o"},
+            "fixed_zone_false": {"label": "fixed zone=false", "color": "#1f77b4", "marker": "o"},
+            "fixed_zone_true": {"label": "fixed zone=true", "color": "#2ca02c", "marker": "^"},
             "learn": {"label": "learn", "color": "#ff7f0e", "marker": "s"},
+            "learn_zone_false": {"label": "learn zone=false", "color": "#ff7f0e", "marker": "s"},
+            "learn_zone_true": {"label": "learn zone=true", "color": "#d62728", "marker": "D"},
         }
+        bucket_plot_order = [
+            "fixed",
+            "fixed_zone_false",
+            "fixed_zone_true",
+            "learn",
+            "learn_zone_false",
+            "learn_zone_true",
+        ]
 
         fig, axes = plt.subplots(len(metrics_order), 1, figsize=(7.5, 17.0), dpi=120)
         plot_export = {
@@ -2929,7 +2937,7 @@ class RoleBasedRunner(object):
         for idx, metric_name in enumerate(metrics_order):
             ax = axes[idx]
             x_ticks = set()
-            for bucket_name in ("fixed", "learn"):
+            for bucket_name in bucket_plot_order:
                 if bucket_name not in bucket_to_metrics:
                     continue
                 grouped = bucket_to_metrics[bucket_name]
@@ -3043,6 +3051,56 @@ class RoleBasedRunner(object):
         """
         return f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}]"
 
+    def _aggregate_eval_metrics_mean(self, eval_metrics_list):
+        """
+        功能:
+            对多个评估桶指标做等权均值聚合，用于fixed双zone最优模型判定。
+        输入:
+            eval_metrics_list (list[dict]): 多个评估指标字典。
+        输出:
+            dict: 聚合后的评估指标字典。
+        """
+        valid_metrics = [m for m in eval_metrics_list if isinstance(m, dict)]
+        if len(valid_metrics) == 0:
+            return {
+                "eval_reward": 0.0,
+                "capture_rate": 0.0,
+                "capture_steps": float(self.eval_episode_length),
+                "capture_steps_objective": float(self.eval_episode_length),
+                "alive_rate": 0.0,
+                "max_escape_gap_angle": float("nan"),
+                "captured_episodes": 0,
+                "total_eval_episodes": 0,
+            }
+
+        def _mean_metric(name, default):
+            vals = [float(m.get(name, default)) for m in valid_metrics]
+            return float(np.mean(vals)) if len(vals) > 0 else float(default)
+
+        gap_vals = [
+            float(m.get("max_escape_gap_angle", float("nan")))
+            for m in valid_metrics
+            if np.isfinite(float(m.get("max_escape_gap_angle", float("nan"))))
+        ]
+        max_escape_gap_angle = float(np.mean(gap_vals)) if len(gap_vals) > 0 else float("nan")
+        return {
+            "eval_reward": _mean_metric("eval_reward", 0.0),
+            "capture_rate": _mean_metric("capture_rate", 0.0),
+            "capture_steps": _mean_metric("capture_steps", float(self.eval_episode_length)),
+            "capture_steps_objective": _mean_metric(
+                "capture_steps_objective",
+                float(self.eval_episode_length),
+            ),
+            "alive_rate": _mean_metric("alive_rate", 0.0),
+            "max_escape_gap_angle": float(max_escape_gap_angle),
+            "captured_episodes": int(
+                np.sum([int(m.get("captured_episodes", 0)) for m in valid_metrics], dtype=np.int64)
+            ),
+            "total_eval_episodes": int(
+                np.sum([int(m.get("total_eval_episodes", 0)) for m in valid_metrics], dtype=np.int64)
+            ),
+        }
+
     def _print_timed(self, message):
         """
         功能:
@@ -3079,6 +3137,28 @@ class RoleBasedRunner(object):
         print(row)
         print("")
 
+    def _is_better_capture_steps_metric(self, eval_metrics, best_metrics):
+        """
+        功能:
+            判断当前capture_steps是否应刷新历史最优。
+        输入:
+            eval_metrics (dict): 当前评估指标，需包含capture_steps_objective/capture_steps。
+            best_metrics (dict): 历史最优指标，需包含capture_steps_objective/capture_steps。
+        输出:
+            bool: True表示当前结果更优。
+        """
+        cur_obj = float(eval_metrics.get("capture_steps_objective", np.inf))
+        best_obj = float(best_metrics.get("capture_steps_objective", np.inf))
+        cur_steps = float(eval_metrics["capture_steps"])
+        best_steps = float(best_metrics.get("capture_steps", np.inf))
+        eps = 1e-8
+
+        if cur_obj < best_obj - eps:
+            return True
+        if cur_obj > best_obj + eps:
+            return False
+        return cur_steps < best_steps - eps
+
     def _peek_fixed_metric_updates(self, eval_metrics):
         """
         功能:
@@ -3093,7 +3173,7 @@ class RoleBasedRunner(object):
             updated_metrics.append("reward")
         if float(eval_metrics["capture_rate"]) > float(self.best_eval_metrics["capture_rate"]):
             updated_metrics.append("capture_rate")
-        if float(eval_metrics["capture_steps"]) < float(self.best_eval_metrics["capture_steps"]):
+        if self._is_better_capture_steps_metric(eval_metrics, self.best_eval_metrics):
             updated_metrics.append("capture_steps")
         cur_gap = float(eval_metrics.get("max_escape_gap_angle", float("nan")))
         if np.isfinite(cur_gap) and cur_gap < float(self.best_eval_metrics["max_escape_gap_angle"]):
@@ -3115,6 +3195,7 @@ class RoleBasedRunner(object):
                 "eval_reward": -np.inf,
                 "capture_rate": -np.inf,
                 "capture_steps": np.inf,
+                "capture_steps_objective": np.inf,
                 "max_escape_gap_angle": np.inf,
             }
         best = self.best_eval_metrics_by_bucket[bucket]
@@ -3123,7 +3204,7 @@ class RoleBasedRunner(object):
             updated_metrics.append("eval_reward")
         if float(eval_metrics["capture_rate"]) > float(best["capture_rate"]):
             updated_metrics.append("capture_rate")
-        if float(eval_metrics["capture_steps"]) < float(best["capture_steps"]):
+        if self._is_better_capture_steps_metric(eval_metrics, best):
             updated_metrics.append("capture_steps")
         cur_gap = float(eval_metrics.get("max_escape_gap_angle", float("nan")))
         if np.isfinite(cur_gap) and cur_gap < float(best["max_escape_gap_angle"]):
@@ -3145,6 +3226,7 @@ class RoleBasedRunner(object):
                 "eval_reward": -np.inf,
                 "capture_rate": -np.inf,
                 "capture_steps": np.inf,
+                "capture_steps_objective": np.inf,
                 "max_escape_gap_angle": np.inf,
             }
         best = self.best_eval_metrics_by_bucket[bucket]
@@ -3155,6 +3237,7 @@ class RoleBasedRunner(object):
             best["capture_rate"] = float(eval_metrics["capture_rate"])
         if "capture_steps" in updated_metrics:
             best["capture_steps"] = float(eval_metrics["capture_steps"])
+            best["capture_steps_objective"] = float(eval_metrics.get("capture_steps_objective", eval_metrics["capture_steps"]))
         if "max_escape_gap_angle" in updated_metrics:
             best["max_escape_gap_angle"] = float(eval_metrics["max_escape_gap_angle"])
         self._print_metric_table(
@@ -3163,6 +3246,7 @@ class RoleBasedRunner(object):
                 "cur_reward": "{:.4f}".format(float(eval_metrics["eval_reward"])),
                 "cur_capture_rate": "{:.4f}".format(float(eval_metrics["capture_rate"])),
                 "cur_capture_steps": "{:.2f}".format(float(eval_metrics["capture_steps"])),
+                "cur_capture_steps_obj": "{:.2f}".format(float(eval_metrics.get("capture_steps_objective", eval_metrics["capture_steps"]))),
                 "cur_max_escape_gap": (
                     "{:.4f}".format(float(eval_metrics["max_escape_gap_angle"]))
                     if np.isfinite(float(eval_metrics.get("max_escape_gap_angle", float("nan"))))
@@ -3171,6 +3255,7 @@ class RoleBasedRunner(object):
                 "best_reward": "{:.4f}".format(float(best["eval_reward"])),
                 "best_capture_rate": "{:.4f}".format(float(best["capture_rate"])),
                 "best_capture_steps": "{:.2f}".format(float(best["capture_steps"])),
+                "best_capture_steps_obj": "{:.2f}".format(float(best.get("capture_steps_objective", best["capture_steps"]))),
                 "best_max_escape_gap": (
                     "{:.4f}".format(float(best["max_escape_gap_angle"]))
                     if np.isfinite(float(best.get("max_escape_gap_angle", float("nan"))))
@@ -3204,9 +3289,12 @@ class RoleBasedRunner(object):
             self._save_best_snapshot("capture_rate", episode, eval_metrics)
             updated_metrics.append("capture_rate")
 
-        # Step 3: capture_steps越小越好
-        if float(eval_metrics["capture_steps"]) < float(self.best_eval_metrics["capture_steps"]):
+        # Step 3: capture_steps优先保证capture_rate不下降，再比较更低步长。
+        if self._is_better_capture_steps_metric(eval_metrics, self.best_eval_metrics):
             self.best_eval_metrics["capture_steps"] = float(eval_metrics["capture_steps"])
+            self.best_eval_metrics["capture_steps_objective"] = float(
+                eval_metrics.get("capture_steps_objective", eval_metrics["capture_steps"])
+            )
             self._save_best_snapshot("capture_steps", episode, eval_metrics)
             updated_metrics.append("capture_steps")
 
@@ -3224,6 +3312,7 @@ class RoleBasedRunner(object):
                 "cur_reward": "{:.4f}".format(float(eval_metrics["eval_reward"])),
                 "cur_capture_rate": "{:.4f}".format(float(eval_metrics["capture_rate"])),
                 "cur_capture_steps": "{:.2f}".format(float(eval_metrics["capture_steps"])),
+                "cur_capture_steps_obj": "{:.2f}".format(float(eval_metrics.get("capture_steps_objective", eval_metrics["capture_steps"]))),
                 "cur_max_escape_gap": (
                     "{:.4f}".format(float(eval_metrics["max_escape_gap_angle"]))
                     if np.isfinite(float(eval_metrics.get("max_escape_gap_angle", float("nan"))))
@@ -3232,6 +3321,7 @@ class RoleBasedRunner(object):
                 "best_reward": "{:.4f}".format(float(self.best_eval_metrics["reward"])),
                 "best_capture_rate": "{:.4f}".format(float(self.best_eval_metrics["capture_rate"])),
                 "best_capture_steps": "{:.2f}".format(float(self.best_eval_metrics["capture_steps"])),
+                "best_capture_steps_obj": "{:.2f}".format(float(self.best_eval_metrics.get("capture_steps_objective", self.best_eval_metrics["capture_steps"]))),
                 "best_max_escape_gap": (
                     "{:.4f}".format(float(self.best_eval_metrics["max_escape_gap_angle"]))
                     if np.isfinite(float(self.best_eval_metrics.get("max_escape_gap_angle", float("nan"))))
@@ -3265,7 +3355,9 @@ class RoleBasedRunner(object):
         # Step 3: 复制本次eval的GIF到最优目录
         for old_gif in metric_dir.glob("e-*-env-*.gif"):
             old_gif.unlink(missing_ok=True)
-        eval_gif_paths = sorted(Path(self.gif_dir).glob(f"e-fixed-{int(episode)}-env-*.gif"))
+        eval_gif_paths = sorted(Path(self.gif_dir).glob(f"e-fixed_zone_*-{int(episode)}-env-*.gif"))
+        if len(eval_gif_paths) == 0:
+            eval_gif_paths = sorted(Path(self.gif_dir).glob(f"e-fixed-{int(episode)}-env-*.gif"))
         if len(eval_gif_paths) == 0:
             eval_gif_paths = sorted(Path(self.gif_dir).glob(f"e-{int(episode)}-env-*.gif"))
         for gif_path in eval_gif_paths:
@@ -3281,12 +3373,14 @@ class RoleBasedRunner(object):
             f.write(f"eval_reward={float(eval_metrics['eval_reward']):.6f}\n")
             f.write(f"capture_rate={float(eval_metrics['capture_rate']):.6f}\n")
             f.write(f"capture_steps={float(eval_metrics['capture_steps']):.6f}\n")
+            f.write(f"capture_steps_objective={float(eval_metrics.get('capture_steps_objective', eval_metrics['capture_steps'])):.6f}\n")
             f.write(f"max_escape_gap_angle={float(eval_metrics.get('max_escape_gap_angle', float('nan'))):.6f}\n")
             f.write(f"captured_episodes={int(eval_metrics.get('captured_episodes', 0))}\n")
             f.write(f"total_eval_episodes={int(eval_metrics.get('total_eval_episodes', 0))}\n")
             f.write(f"best_reward={float(self.best_eval_metrics['reward']):.6f}\n")
             f.write(f"best_capture_rate={float(self.best_eval_metrics['capture_rate']):.6f}\n")
             f.write(f"best_capture_steps={float(self.best_eval_metrics['capture_steps']):.6f}\n")
+            f.write(f"best_capture_steps_objective={float(self.best_eval_metrics.get('capture_steps_objective', self.best_eval_metrics['capture_steps'])):.6f}\n")
             f.write(f"best_max_escape_gap_angle={float(self.best_eval_metrics.get('max_escape_gap_angle', float('nan'))):.6f}\n")
         print(
             "[Best] metric={} updated at episode {} | reward={:.4f} | capture_rate={:.4f} | capture_steps={:.2f} | max_escape_gap={:.4f} | path={}".format(
@@ -3371,7 +3465,7 @@ class RoleBasedRunner(object):
     def _final_eval_saved_best_models(self, total_num_steps, episode, model_glob=None):
         """
         功能:
-            训练完成后重载models下可用模型目录，分别在fixed/target_learn上评估并强制保存GIF到各自res目录。
+            训练完成后重载models下可用模型目录，并对可用评估桶执行最终串行评估与GIF保存。
         输入:
             total_num_steps (int): 评估记录使用的总步数。
             episode (int): 训练完成时的episode编号。
@@ -3398,7 +3492,7 @@ class RoleBasedRunner(object):
 
         print("[FinalEval] start evaluating {} model directories".format(len(model_dirs)))
 
-        # Step 2: 逐目录加载模型并在fixed/target_learn上评估，GIF输出到目录/res
+        # Step 2: 逐目录加载模型并对可用评估桶执行最终串行评估，GIF输出到目录/res
         for model_dir in model_dirs:
             self._load_models_from_dir(model_dir)
             res_dir = Path(model_dir) / "res"
@@ -3406,23 +3500,65 @@ class RoleBasedRunner(object):
             for old_gif in res_dir.glob("e-*-env-*.gif"):
                 old_gif.unlink(missing_ok=True)
 
-            self.eval(
-                total_num_steps=total_num_steps,
-                episode=episode,
-                eval_envs=self.eval_envs,
-                bucket="fixed",
-                save_gifs=True,
-                record_logs=False,
-                gif_output_dir=res_dir,
-            )
-            if self.eval_envs_target_learn is not None:
-                self.eval(
+            if self.use_dual_zone_eval:
+                self.serial_eval(
                     total_num_steps=total_num_steps,
                     episode=episode,
-                    eval_envs=self.eval_envs_target_learn,
-                    bucket="target_learn",
+                    eval_envs=self.eval_envs_zone_false,
+                    bucket="fixed_zone_false",
                     save_gifs=True,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
+                self.serial_eval(
+                    total_num_steps=total_num_steps,
+                    episode=episode,
+                    eval_envs=self.eval_envs_zone_true,
+                    bucket="fixed_zone_true",
+                    save_gifs=True,
+                    record_logs=False,
+                    gif_output_dir=res_dir,
+                )
+                if (
+                    self.eval_envs_target_learn_zone_false is not None
+                    and self.eval_envs_target_learn_zone_true is not None
+                ):
+                    self.serial_eval(
+                        total_num_steps=total_num_steps,
+                        episode=episode,
+                        eval_envs=self.eval_envs_target_learn_zone_false,
+                        bucket="target_learn_zone_false",
+                        save_gifs=True,
+                        record_logs=False,
+                        gif_output_dir=res_dir,
+                    )
+                    self.serial_eval(
+                        total_num_steps=total_num_steps,
+                        episode=episode,
+                        eval_envs=self.eval_envs_target_learn_zone_true,
+                        bucket="target_learn_zone_true",
+                        save_gifs=True,
+                        record_logs=False,
+                        gif_output_dir=res_dir,
+                    )
+            else:
+                self.serial_eval(
+                    total_num_steps=total_num_steps,
+                    episode=episode,
+                    eval_envs=self.eval_envs,
+                    bucket="fixed",
+                    save_gifs=True,
+                    record_logs=False,
+                    gif_output_dir=res_dir,
+                )
+                if self.eval_envs_target_learn is not None:
+                    self.serial_eval(
+                        total_num_steps=total_num_steps,
+                        episode=episode,
+                        eval_envs=self.eval_envs_target_learn,
+                        bucket="target_learn",
+                        save_gifs=True,
+                        record_logs=False,
+                        gif_output_dir=res_dir,
+                    )
             print("[FinalEval] finished {} -> {}".format(str(model_dir), str(res_dir)))

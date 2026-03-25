@@ -1,13 +1,13 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: 2xEp_rndPolicy_v3v1_NoCompDeltaBase_Zone
+  experiment_name: v3v1_encircle_Base_esc8_Zone
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
 
 # Environment settings (common)
 env:
-  env_name: NewEscape-Pursuit-Ablation
+  env_name: TgtNoColli_rndP50_Pursuit-Ablation
   world_size: 200
   episode_length: 400 # max steps per episode
   max_hunters_num: 3
@@ -51,7 +51,7 @@ reward:
   base_delta_norm_scale: 20.0
 
   # Escape Gap
-  escape_gap_enable: false
+  escape_gap_enable: true
   escape_gap_hunter_reward_scale: 8.0
   escape_gap_target_reward_scale: 5.0
   # 新版拆分项：包围质量reward（基于encircle_score / gap_open_score）
@@ -67,9 +67,9 @@ reward:
   # Capture reward
   hunter_capture_reward: 15.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: team  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: encircle  # Choices: ["team", "alone", "encircle"]
 
-  # Speed Penalty
+  # Speed Penalty;
   speed_penalty: 0.3
 
 # Model/network settings
