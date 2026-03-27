@@ -1978,6 +1978,7 @@ class RoleBasedRunner(object):
                 env_alive_rate[env_i] = float(one_result["alive_rate"])
                 env_active_hunter_count[env_i] = int(one_result["active_hunter_count"])
                 env_capture_escape_gap_angle[env_i] = float(one_result["capture_escape_gap_angle"])
+                self._release_single_eval_env_render(eval_envs=eval_envs, env_i=int(env_i))
                 self._reset_single_eval_env(eval_envs=eval_envs, env_i=int(env_i))
         finally:
             self._close_eval_debug_plot(plot_ctx)
@@ -2073,9 +2074,9 @@ class RoleBasedRunner(object):
         capture_escape_gap_angle = float("nan")
         last_infos = None
         hunter_cum_rewards = np.zeros(num_hunters, dtype=np.float32)
-        hunter_cum_reward_history = [[] for _ in range(num_hunters)]
-        max_escape_gap_history = []
-        active_hunter_history = []
+        hunter_cum_reward_history = [[] for _ in range(num_hunters)] if bool(self.eval_step_plot) else None
+        max_escape_gap_history = [] if bool(self.eval_step_plot) else None
+        active_hunter_history = [] if bool(self.eval_step_plot) else None
         if self.eval_step_plot and plot_ctx is not None:
             self._prepare_eval_debug_plot_env(
                 plot_ctx=plot_ctx,
@@ -2125,10 +2126,11 @@ class RoleBasedRunner(object):
             hunter_step_rewards = rewards[:num_hunters, 0].astype(np.float32)
             hunter_cum_rewards += hunter_step_rewards
             episode_reward += float(np.sum(hunter_step_rewards) / max(1, num_hunters))
-            for hid in range(num_hunters):
-                hunter_cum_reward_history[hid].append(float(hunter_cum_rewards[hid]))
-            max_escape_gap_history.append(float(metric_angle) if metric_valid else float("nan"))
-            active_hunter_history.append(float(active_hunter_count))
+            if bool(self.eval_step_plot):
+                for hid in range(num_hunters):
+                    hunter_cum_reward_history[hid].append(float(hunter_cum_rewards[hid]))
+                max_escape_gap_history.append(float(metric_angle) if metric_valid else float("nan"))
+                active_hunter_history.append(float(active_hunter_count))
 
             if self.eval_step_render:
                 env.render(mode="human")
@@ -2391,6 +2393,28 @@ class RoleBasedRunner(object):
             fig = plot_ctx.get("fig")
             if fig is not None:
                 plt.close(fig)
+        except Exception:
+            return
+
+    def _release_single_eval_env_render(self, eval_envs, env_i):
+        """
+        功能:
+            在串行评估中释放单个子环境的human渲染窗口，避免随env数量累积figure。
+        输入:
+            eval_envs (DummyVecEnv): 评估环境向量封装。
+            env_i (int): 子环境索引。
+        输出:
+            无。
+        """
+        if not bool(self.eval_step_render):
+            return
+        try:
+            env = eval_envs.envs[int(env_i)]
+        except Exception:
+            return
+        try:
+            if hasattr(env, "close_human_render"):
+                env.close_human_render()
         except Exception:
             return
 

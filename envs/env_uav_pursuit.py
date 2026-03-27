@@ -2633,6 +2633,22 @@ class UAVPursuitEnv(object):
             self._human_render_fig = None
         plt.close("all")
 
+    def close_human_render(self):
+        """
+        功能:
+            仅关闭human模式渲染窗口，保留其他全局绘图状态。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if self._human_render_fig is not None:
+            try:
+                plt.close(self._human_render_fig)
+            except Exception:
+                pass
+            self._human_render_fig = None
+
     def _team_sees_target(self):
         """
         功能:

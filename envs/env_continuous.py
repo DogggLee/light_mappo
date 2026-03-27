@@ -132,7 +132,20 @@ class ContinuousActionEnv(object):
         输出:
             无。
         """
-        pass
+        if hasattr(self.env, "close"):
+            self.env.close()
+
+    def close_human_render(self):
+        """
+        功能:
+            仅关闭底层环境human渲染窗口（若支持）。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if hasattr(self.env, "close_human_render"):
+            self.env.close_human_render()
 
     def render(self, mode="rgb_array", **kwargs):
         """
