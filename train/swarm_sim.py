@@ -2123,12 +2123,19 @@ class SwarmSimGUI:
         无。
     """
 
-    def __init__(self, sim: SwarmSimulationCore, sim_config_path: Optional[Path] = None, model_config_path: Optional[Path] = None):
+    def __init__(
+        self,
+        sim: SwarmSimulationCore,
+        sim_config_path: Optional[Path] = None,
+        model_config_path: Optional[Path] = None,
+        grey_mode: bool = False,
+    ):
         if tk is None:
             raise RuntimeError("tkinter is unavailable in current environment")
         self.sim = sim
         self.sim_config_path = sim_config_path
         self.model_config_path = model_config_path
+        self.grey_mode = bool(grey_mode)
         self.model_cfg = {"hunters": {}, "targets": {}}
         self.root = tk.Tk()
         self.root.title("Swarm Search + Pursuit Simulator")
@@ -2906,23 +2913,62 @@ class SwarmSimGUI:
         show_all_targets = bool(getattr(self, "show_all_targets_var", None).get())
         show_pursuit_trace = bool(getattr(self, "show_pursuit_trace_var", None).get())
         show_assignment = bool(getattr(self, "show_assignment_var", None).get())
+        grey_mode = bool(getattr(self, "grey_mode", False))
         self.ax.set_xlim(-ws, ws)
         self.ax.set_ylim(-ws, ws)
         self.ax.set_aspect("equal", adjustable="box")
         self.ax.grid(True, alpha=0.2)
 
-        explorer_colors = {
-            "IDLE": "tab:green",
-            "PREP": "tab:orange",
-            "PUR": "tab:red",
-            "EXH": "tab:gray",
-        }
-        hunter_colors = {
-            "IDLE": "tab:blue",
-            "PREP": "tab:orange",
-            "PUR": "tab:red",
-            "EXH": "tab:gray",
-        }
+        if grey_mode:
+            explorer_colors = {"IDLE": "black", "PREP": "black", "PUR": "black", "EXH": "dimgray"}
+            hunter_colors = {"IDLE": "black", "PREP": "black", "PUR": "black", "EXH": "dimgray"}
+            explorer_marker = "^"
+            hunter_marker = "o"
+            explorer_path_color = "0.45"
+            hunter_path_color = "0.45"
+            pursuit_trace_color = "0.1"
+            patrol_color = "0.35"
+            target_color_pool = "0.1"
+            target_color_hidden = "0.55"
+            assign_explorer_color = "black"
+            assign_hunter_color = "black"
+            assign_explorer_ls = "-"
+            assign_hunter_ls = "-."
+            pending_explorer_ls = "--"
+            pending_hunter_ls = ":"
+            explorer_perception_face = "0.7"
+            target_capture_face = "0.5"
+            target_capture_edge = "0.45"
+        else:
+            explorer_colors = {
+                "IDLE": "tab:green",
+                "PREP": "tab:orange",
+                "PUR": "tab:red",
+                "EXH": "tab:gray",
+            }
+            hunter_colors = {
+                "IDLE": "tab:blue",
+                "PREP": "tab:orange",
+                "PUR": "tab:red",
+                "EXH": "tab:gray",
+            }
+            explorer_marker = "^"
+            hunter_marker = "o"
+            explorer_path_color = "tab:green"
+            hunter_path_color = "tab:blue"
+            pursuit_trace_color = "tab:red"
+            patrol_color = "tab:purple"
+            target_color_pool = "tab:purple"
+            target_color_hidden = "black"
+            assign_explorer_color = "tab:orange"
+            assign_hunter_color = "tab:red"
+            assign_explorer_ls = "-"
+            assign_hunter_ls = "-"
+            pending_explorer_ls = "--"
+            pending_hunter_ls = "--"
+            explorer_perception_face = "tab:green"
+            target_capture_face = "tab:red"
+            target_capture_edge = "tab:red"
 
         for ex in self.sim.explorers:
             p = ex.agent.position
@@ -2932,30 +2978,58 @@ class SwarmSimGUI:
                 ex_circle = plt.Circle(
                     (float(p[0]), float(p[1])),
                     explorer_perception_radius,
-                    facecolor="tab:green",
+                    facecolor=explorer_perception_face,
                     edgecolor="none",
                     alpha=0.08,
                 )
                 self.ax.add_patch(ex_circle)
-            self.ax.scatter([p[0]], [p[1]], c=color, s=45, marker="^")
+            self.ax.scatter([p[0]], [p[1]], c=color, s=45, marker=explorer_marker)
+            if grey_mode and phase in {"PREP", "PUR"}:
+                box_half = max(1.1, ws * 0.012)
+                box = plt.Rectangle(
+                    (float(p[0]) - box_half, float(p[1]) - box_half),
+                    2.0 * box_half,
+                    2.0 * box_half,
+                    fill=False,
+                    edgecolor="black",
+                    linewidth=1.1,
+                    linestyle="--" if phase == "PREP" else "-",
+                )
+                self.ax.add_patch(box)
+            if grey_mode and phase == "EXH":
+                self.ax.scatter([p[0]], [p[1]], c="black", s=34, marker="x", linewidths=1.0)
             if len(ex.path) > 1:
                 path_np = np.asarray(ex.path)
-                self.ax.plot(path_np[:, 0], path_np[:, 1], color="tab:green", alpha=0.15)
+                self.ax.plot(path_np[:, 0], path_np[:, 1], color=explorer_path_color, alpha=0.15)
 
         for h in self.sim.hunters:
             p = h.agent.position
             phase = self._get_hunter_phase(h)
             color = hunter_colors.get(phase, "tab:blue")
-            self.ax.scatter([p[0]], [p[1]], c=color, s=35, marker="o")
+            self.ax.scatter([p[0]], [p[1]], c=color, s=35, marker=hunter_marker)
+            if grey_mode and phase in {"PREP", "PUR"}:
+                box_half = max(1.0, ws * 0.010)
+                box = plt.Rectangle(
+                    (float(p[0]) - box_half, float(p[1]) - box_half),
+                    2.0 * box_half,
+                    2.0 * box_half,
+                    fill=False,
+                    edgecolor="black",
+                    linewidth=1.0,
+                    linestyle="--" if phase == "PREP" else "-",
+                )
+                self.ax.add_patch(box)
+            if grey_mode and phase == "EXH":
+                self.ax.scatter([p[0]], [p[1]], c="black", s=28, marker="x", linewidths=1.0)
             if h.standby_mode == "split" and len(h.standby_path) > 1:
                 path_np = np.asarray(h.standby_path)
-                self.ax.plot(path_np[:, 0], path_np[:, 1], color="tab:blue", alpha=0.12)
+                self.ax.plot(path_np[:, 0], path_np[:, 1], color=hunter_path_color, alpha=0.12)
             if show_pursuit_trace and int(h.pursuit_traj_start) >= 0:
                 traj = h.agent.trajectory
                 start_idx = int(h.pursuit_traj_start)
                 if len(traj) > start_idx + 1:
                     seg = np.asarray(traj[start_idx:], dtype=np.float32)
-                    self.ax.plot(seg[:, 0], seg[:, 1], color="tab:red", alpha=0.45, linewidth=1.2)
+                    self.ax.plot(seg[:, 0], seg[:, 1], color=pursuit_trace_color, alpha=0.45, linewidth=1.2)
 
         for tid, t in enumerate(self.sim.targets):
             if not t.alive:
@@ -2969,7 +3043,7 @@ class SwarmSimGUI:
                 self.ax.plot(
                     patrol_np[:, 0],
                     patrol_np[:, 1],
-                    color="tab:purple",
+                    color=patrol_color,
                     linestyle="--",
                     linewidth=1.0,
                     alpha=0.25,
@@ -2978,14 +3052,14 @@ class SwarmSimGUI:
                 cap_circle = plt.Circle(
                     (float(p[0]), float(p[1])),
                     target_capture_dis,
-                    facecolor="tab:red",
-                    edgecolor="tab:red",
+                    facecolor=target_capture_face,
+                    edgecolor=target_capture_edge,
                     alpha=0.10,
                     linewidth=1.0,
                 )
                 self.ax.add_patch(cap_circle)
-            color = "tab:purple" if t.in_pool else "black"
-            self.ax.scatter([p[0]], [p[1]], c=color, s=40, marker="x")
+            color = target_color_pool if t.in_pool else target_color_hidden
+            self.ax.scatter([p[0]], [p[1]], c=color, s=40, marker="X")
             self.ax.text(
                 float(p[0]) + 1.0,
                 float(p[1]) + 1.0,
@@ -3006,8 +3080,8 @@ class SwarmSimGUI:
                         self.ax.plot(
                             [ex_pos[0], tgt_pos[0]],
                             [ex_pos[1], tgt_pos[1]],
-                            color="tab:orange",
-                            linestyle="-",
+                            color=assign_explorer_color,
+                            linestyle=assign_explorer_ls,
                             linewidth=1.3,
                             alpha=0.9,
                         )
@@ -3019,8 +3093,8 @@ class SwarmSimGUI:
                     self.ax.plot(
                         [h_pos[0], tgt_pos[0]],
                         [h_pos[1], tgt_pos[1]],
-                        color="tab:red",
-                        linestyle="-",
+                        color=assign_hunter_color,
+                        linestyle=assign_hunter_ls,
                         linewidth=1.1,
                         alpha=0.8,
                     )
@@ -3037,8 +3111,8 @@ class SwarmSimGUI:
                     self.ax.plot(
                         [ex_pos[0], tgt_pos[0]],
                         [ex_pos[1], tgt_pos[1]],
-                        color="tab:orange",
-                        linestyle="--",
+                        color=assign_explorer_color,
+                        linestyle=pending_explorer_ls,
                         linewidth=1.1,
                         alpha=0.85,
                     )
@@ -3049,120 +3123,196 @@ class SwarmSimGUI:
                         self.ax.plot(
                             [h_pos[0], tgt_pos[0]],
                             [h_pos[1], tgt_pos[1]],
-                            color="tab:red",
-                            linestyle="--",
+                            color=assign_hunter_color,
+                            linestyle=pending_hunter_ls,
                             linewidth=1.0,
                             alpha=0.7,
                         )
 
-        legend_handles = [
-            Line2D(
-                [0],
-                [0],
-                marker="^",
-                color="w",
-                markerfacecolor=explorer_colors["IDLE"],
-                markeredgecolor=explorer_colors["IDLE"],
-                markersize=7,
-                label=self._t("Explorer-空闲", "Explorer-Idle"),
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="^",
-                color="w",
-                markerfacecolor=explorer_colors["PREP"],
-                markeredgecolor=explorer_colors["PREP"],
-                markersize=7,
-                label=self._t("Explorer-预备", "Explorer-Prep"),
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="^",
-                color="w",
-                markerfacecolor=explorer_colors["PUR"],
-                markeredgecolor=explorer_colors["PUR"],
-                markersize=7,
-                label=self._t("Explorer-追捕", "Explorer-Pursuit"),
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor=hunter_colors["IDLE"],
-                markeredgecolor=hunter_colors["IDLE"],
-                markersize=7,
-                label=self._t("Hunter-空闲", "Hunter-Idle"),
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor=hunter_colors["PREP"],
-                markeredgecolor=hunter_colors["PREP"],
-                markersize=7,
-                label=self._t("Hunter-预备", "Hunter-Prep"),
-            ),
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="w",
-                markerfacecolor=hunter_colors["PUR"],
-                markeredgecolor=hunter_colors["PUR"],
-                markersize=7,
-                label=self._t("Hunter-追捕", "Hunter-Pursuit"),
-            ),
-            Line2D([0], [0], marker="x", color="black", markersize=8, label="Target"),
-        ]
+        if grey_mode:
+            legend_handles = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker=explorer_marker,
+                    color="black",
+                    linestyle="None",
+                    markerfacecolor="black",
+                    markeredgecolor="black",
+                    markersize=7,
+                    label=self._t("Explorer", "Explorer"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker=hunter_marker,
+                    color="black",
+                    linestyle="None",
+                    markerfacecolor="black",
+                    markeredgecolor="black",
+                    markersize=7,
+                    label=self._t("Hunter", "Hunter"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    color="black",
+                    linestyle="--",
+                    markerfacecolor="none",
+                    markeredgecolor="black",
+                    markersize=9,
+                    label=self._t("预备状态叠加框", "Prep Overlay"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    color="black",
+                    linestyle="-",
+                    markerfacecolor="none",
+                    markeredgecolor="black",
+                    markersize=9,
+                    label=self._t("追捕状态叠加框", "Pursuit Overlay"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="x",
+                    color="dimgray",
+                    linestyle="None",
+                    markersize=8,
+                    label=self._t("耗尽", "Exhausted"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="X",
+                    linestyle="None",
+                    color=target_color_hidden,
+                    markeredgecolor=target_color_hidden,
+                    markerfacecolor=target_color_hidden,
+                    markersize=8,
+                    label="Target",
+                ),
+            ]
+        else:
+            legend_handles = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker=explorer_marker,
+                    color=explorer_colors["IDLE"],
+                    linestyle="None",
+                    markerfacecolor=explorer_colors["IDLE"],
+                    markeredgecolor=explorer_colors["IDLE"],
+                    markersize=7,
+                    label=self._t("Explorer-空闲", "Explorer-Idle"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker=explorer_marker,
+                    color=explorer_colors["PREP"],
+                    linestyle="None",
+                    markerfacecolor=explorer_colors["PREP"],
+                    markeredgecolor=explorer_colors["PREP"],
+                    markersize=7,
+                    label=self._t("Explorer-预备", "Explorer-Prep"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker=explorer_marker,
+                    color=explorer_colors["PUR"],
+                    linestyle="None",
+                    markerfacecolor=explorer_colors["PUR"],
+                    markeredgecolor=explorer_colors["PUR"],
+                    markersize=7,
+                    label=self._t("Explorer-追捕", "Explorer-Pursuit"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker=hunter_marker,
+                    color=hunter_colors["IDLE"],
+                    linestyle="None",
+                    markerfacecolor=hunter_colors["IDLE"],
+                    markeredgecolor=hunter_colors["IDLE"],
+                    markersize=7,
+                    label=self._t("Hunter-空闲", "Hunter-Idle"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker=hunter_marker,
+                    color=hunter_colors["PREP"],
+                    linestyle="None",
+                    markerfacecolor=hunter_colors["PREP"],
+                    markeredgecolor=hunter_colors["PREP"],
+                    markersize=7,
+                    label=self._t("Hunter-预备", "Hunter-Prep"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker=hunter_marker,
+                    color=hunter_colors["PUR"],
+                    linestyle="None",
+                    markerfacecolor=hunter_colors["PUR"],
+                    markeredgecolor=hunter_colors["PUR"],
+                    markersize=7,
+                    label=self._t("Hunter-追捕", "Hunter-Pursuit"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="X",
+                    linestyle="None",
+                    color=target_color_hidden,
+                    markeredgecolor=target_color_hidden,
+                    markerfacecolor=target_color_hidden,
+                    markersize=8,
+                    label="Target",
+                ),
+            ]
         if show_assignment:
             legend_handles.append(
                 Line2D(
                     [0],
                     [0],
-                    color="tab:orange",
+                    color="black" if grey_mode else "tab:orange",
                     linestyle="-",
                     linewidth=1.2,
-                    label=self._t("已下发(Explorer)", "Assigned-Explorer"),
+                    label=self._t("已下发", "Assigned"),
                 )
             )
             legend_handles.append(
                 Line2D(
                     [0],
                     [0],
-                    color="tab:red",
-                    linestyle="-",
-                    linewidth=1.0,
-                    label=self._t("已下发(Hunter)", "Assigned-Hunter"),
-                )
-            )
-            legend_handles.append(
-                Line2D(
-                    [0],
-                    [0],
-                    color="tab:orange",
+                    color="black" if grey_mode else "tab:orange",
                     linestyle="--",
                     linewidth=1.1,
-                    label=self._t("待下发(Explorer)", "Pending-Explorer"),
-                )
-            )
-            legend_handles.append(
-                Line2D(
-                    [0],
-                    [0],
-                    color="tab:red",
-                    linestyle="--",
-                    linewidth=1.0,
-                    label=self._t("待下发(Hunter)", "Pending-Hunter"),
+                    label=self._t("待下发", "Pending"),
                 )
             )
         if show_explorer_perception:
-            legend_handles.append(Patch(facecolor="tab:green", alpha=0.12, label=self._t("Explorer感知范围", "Explorer-Perception")))
+            legend_handles.append(
+                Patch(
+                    facecolor=explorer_perception_face,
+                    alpha=0.12,
+                    label=self._t("Explorer感知范围", "Explorer-Perception"),
+                )
+            )
         if show_target_capture:
-            legend_handles.append(Patch(facecolor="tab:red", alpha=0.12, label=self._t("Target捕获范围", "Target-Capture")))
+            legend_handles.append(
+                Patch(
+                    facecolor=target_capture_face,
+                    alpha=0.12,
+                    label=self._t("Target捕获范围", "Target-Capture"),
+                )
+            )
         has_pending = bool(show_assignment and self.sim.pending_assignment is not None and len(self.sim.pending_assignment) > 0)
         if not has_pending:
             filtered = []
@@ -3220,11 +3370,28 @@ class SwarmSimGUI:
         undiscovered = max(0, total_targets - captured - pursuing - discovered)
 
         ax.text(0.02, 0.98, self._t("任务池", "Targets"), va="top", fontsize=9, fontweight="bold")
+        grey_mode = bool(getattr(self, "grey_mode", False))
         target_stats = [
-            (self._t("未发现", "Undisc"), undiscovered, "#9e9e9e"),
-            (self._t("已发现", "Discov"), discovered, "#9467bd"),
-            (self._t("追捕中", "Pursue"), pursuing, "#ff7f0e"),
-            (self._t("已捕获", "Capt"), captured, "#2ca02c"),
+            (
+                self._t("未发现", "Undisc"),
+                undiscovered,
+                "#9e9e9e",
+            ),
+            (
+                self._t("已发现", "Discov"),
+                discovered,
+                "#777777" if grey_mode else "#9467bd",
+            ),
+            (
+                self._t("追捕中", "Pursue"),
+                pursuing,
+                "#555555" if grey_mode else "#ff7f0e",
+            ),
+            (
+                self._t("已捕获", "Capt"),
+                captured,
+                "#222222" if grey_mode else "#2ca02c",
+            ),
         ]
         y0 = 0.92
         for idx, (name, value, color) in enumerate(target_stats):
@@ -3236,18 +3403,22 @@ class SwarmSimGUI:
 
         # Step 2: 无人机资源池续航与任务状态
         ax.text(0.02, 0.67, self._t("资源池", "Resources"), va="top", fontsize=9, fontweight="bold")
-        explorer_colors = {
-            "IDLE": "#2ca02c",
-            "PREP": "#ff7f0e",
-            "PUR": "#d62728",
-            "EXH": "#7f7f7f",
-        }
-        hunter_colors = {
-            "IDLE": "#1f77b4",
-            "PREP": "#ff7f0e",
-            "PUR": "#d62728",
-            "EXH": "#7f7f7f",
-        }
+        if grey_mode:
+            explorer_colors = {"IDLE": "#111111", "PREP": "#444444", "PUR": "#777777", "EXH": "#aaaaaa"}
+            hunter_colors = {"IDLE": "#111111", "PREP": "#444444", "PUR": "#777777", "EXH": "#aaaaaa"}
+        else:
+            explorer_colors = {
+                "IDLE": "#2ca02c",
+                "PREP": "#ff7f0e",
+                "PUR": "#d62728",
+                "EXH": "#7f7f7f",
+            }
+            hunter_colors = {
+                "IDLE": "#1f77b4",
+                "PREP": "#ff7f0e",
+                "PUR": "#d62728",
+                "EXH": "#7f7f7f",
+            }
         drone_rows = []
         for idx, ex in enumerate(self.sim.explorers):
             state = self._get_explorer_phase(ex)
@@ -3625,6 +3796,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target_actor", type=str, default=None, help="Optional actor for target learn policy")
     parser.add_argument("--hunter_actor", type=str, default=None, help="Optional actor for hunter pursuit policy")
     parser.add_argument(
+        "--grey",
+        action="store_true",
+        help="Use grayscale-friendly visualization style (avoid color-only distinctions).",
+    )
+    parser.add_argument(
         "--model_config_file",
         type=str,
         default=None,
@@ -3685,7 +3861,12 @@ def main():
     )
     sim_cfg_path = Path(args.sim_config_file) if args.sim_config_file is not None else None
     model_cfg_path = Path(args.model_config_file) if args.model_config_file is not None else None
-    app = SwarmSimGUI(sim, sim_config_path=sim_cfg_path, model_config_path=model_cfg_path)
+    app = SwarmSimGUI(
+        sim,
+        sim_config_path=sim_cfg_path,
+        model_config_path=model_cfg_path,
+        grey_mode=bool(args.grey),
+    )
     app.run()
 
 

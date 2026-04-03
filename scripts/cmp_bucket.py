@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         help="为 True 时用线型区分；不传则为 False，使用颜色区分。",
     )
     parser.add_argument(
+        "--marker",
+        action="store_true",
+        help="为 True 时用 marker 区分曲线；不传则不使用 marker。",
+    )
+    parser.add_argument(
         "--bucket",
         type=str,
         default=None,
@@ -57,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="可选：输出图片路径；不填则直接弹窗展示。",
+    )
+    parser.add_argument(
+        "--font_size",
+        type=int,
+        default=16,
+        help="标题、坐标轴名称和坐标刻度字号，默认 16。",
     )
     return parser.parse_args()
 
@@ -110,15 +121,20 @@ def _load_metric_xy(
     return x, y, used_bucket
 
 
-def _build_styles(num_curves: int, use_line_style: bool) -> List[Dict[str, str]]:
+def _build_styles(
+    num_curves: int,
+    use_line_style: bool,
+    use_marker: bool,
+) -> List[Dict[str, str | None]]:
     """
     功能:
-        生成每条曲线的绘图风格（颜色/线型）。
+        生成每条曲线的绘图风格（颜色/线型/marker）。
     输入:
         num_curves (int): 曲线数量。
         use_line_style (bool): 是否启用线型区分模式。
+        use_marker (bool): 是否启用 marker 区分模式。
     输出:
-        List[Dict[str, str]]: 每条曲线的style字典。
+        List[Dict[str, str | None]]: 每条曲线的style字典。
     """
     # Step 1: 准备颜色与线型候选
     color_cycle = [
@@ -134,14 +150,15 @@ def _build_styles(num_curves: int, use_line_style: bool) -> List[Dict[str, str]]
         "tab:cyan",
     ]
     line_cycle = ["-", "--", "-.", ":"]
-    styles: List[Dict[str, str]] = []
+    marker_cycle = ["o", "s", "^", "D", "v", "P", "X", "*", "<", ">"]
+    styles: List[Dict[str, str | None]] = []
 
     # Step 2: 根据参数选择区分策略
     for idx in range(num_curves):
-        if use_line_style:
-            styles.append({"color": "tab:blue", "linestyle": line_cycle[idx % len(line_cycle)]})
-        else:
-            styles.append({"color": color_cycle[idx % len(color_cycle)], "linestyle": "-"})
+        color = "black" if (use_line_style or use_marker) else color_cycle[idx % len(color_cycle)]
+        linestyle = line_cycle[idx % len(line_cycle)] if use_line_style else "-"
+        marker = marker_cycle[idx % len(marker_cycle)] if use_marker else None
+        styles.append({"color": color, "linestyle": linestyle, "marker": marker})
     return styles
 
 
@@ -149,11 +166,12 @@ def _plot_one_metric(
     ax,
     json_paths: List[Path],
     names: List[str],
-    styles: List[Dict[str, str]],
+    styles: List[Dict[str, str | None]],
     bucket_name: str | None,
     metric_name: str,
     title: str,
     y_label: str,
+    font_size: int,
 ) -> str:
     """
     功能:
@@ -162,11 +180,12 @@ def _plot_one_metric(
         ax: matplotlib子图对象。
         json_paths (List[Path]): 多个指标JSON路径。
         names (List[str]): 对应曲线名称列表。
-        styles (List[Dict[str, str]]): 对应曲线样式列表。
+        styles (List[Dict[str, str | None]]): 对应曲线样式列表。
         bucket_name (str | None): 指定bucket名；None时自动选第一个。
         metric_name (str): 指标名。
         title (str): 子图标题。
         y_label (str): y轴标签。
+        font_size (int): 标题、轴标签与刻度字号。
     输出:
         str: 实际使用的bucket名称（用于总标题展示）。
     """
@@ -183,14 +202,15 @@ def _plot_one_metric(
             color=styles[idx]["color"],
             linestyle=styles[idx]["linestyle"],
             linewidth=2.0,
-            marker="o",
-            markersize=3.5,
+            marker=styles[idx]["marker"],
+            markersize=6.0,
         )
 
     # Step 2: 设置坐标轴样式
-    ax.set_title(title)
-    ax.set_xlabel("Num Hunters")
-    ax.set_ylabel(y_label)
+    ax.set_title(title, fontsize=font_size)
+    ax.set_xlabel("Num Hunters", fontsize=font_size)
+    ax.set_ylabel(y_label, fontsize=font_size)
+    ax.tick_params(axis="both", labelsize=font_size)
     ax.grid(True, linestyle="--", alpha=0.3)
     return used_bucket_final
 
@@ -216,7 +236,11 @@ def main() -> None:
             raise FileNotFoundError(f"JSON file not found: {path}")
 
     # Step 2: 创建画布并绘制4个核心指标（2x2）
-    styles = _build_styles(num_curves=len(json_paths), use_line_style=bool(args.ls))
+    styles = _build_styles(
+        num_curves=len(json_paths),
+        use_line_style=bool(args.ls),
+        use_marker=bool(args.marker),
+    )
     fig, axes = plt.subplots(2, 2, figsize=(14, 9), constrained_layout=False)
     axes = np.asarray(axes).reshape(-1)
     used_bucket = _plot_one_metric(
@@ -228,10 +252,14 @@ def main() -> None:
         metric_name="capture_rate",
         title="Capture Rate",
         y_label="Rate",
+        font_size=int(args.font_size),
     )
     axes[0].set_ylim(0.4, 1.0)
     axes[0].set_yticks(np.linspace(0.4, 1.0, 7))
-    axes[0].set_yticklabels([f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)])
+    axes[0].set_yticklabels(
+        [f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)],
+        fontsize=int(args.font_size),
+    )
 
     _plot_one_metric(
         ax=axes[1],
@@ -242,6 +270,7 @@ def main() -> None:
         metric_name="capture_steps",
         title="Capture Steps",
         y_label="Steps",
+        font_size=int(args.font_size),
     )
     axes[1].set_ylim(100.0, 300.0)
 
@@ -254,10 +283,14 @@ def main() -> None:
         metric_name="alive_rate",
         title="Alive Rate",
         y_label="Rate",
+        font_size=int(args.font_size),
     )
     axes[2].set_ylim(0.4, 1.0)
     axes[2].set_yticks(np.linspace(0.4, 1.0, 7))
-    axes[2].set_yticklabels([f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)])
+    axes[2].set_yticklabels(
+        [f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)],
+        fontsize=int(args.font_size),
+    )
 
     _plot_one_metric(
         ax=axes[3],
@@ -268,11 +301,18 @@ def main() -> None:
         metric_name="max_escape_gap_angle",
         title="Max Escape Gap",
         y_label="Angle (deg)",
+        font_size=int(args.font_size),
     )
 
     # Step 3: 设置统一标题与图外底部图例，避免遮挡曲线
-    mode_desc = "LineStyle" if bool(args.ls) else "Color"
-    fig.suptitle(f"Bucket Compare ({used_bucket}) | Style={mode_desc}")
+    mode_parts: List[str] = []
+    mode_parts.append("LineStyle" if bool(args.ls) else "SolidLine")
+    mode_parts.append("Marker" if bool(args.marker) else "NoMarker")
+    mode_parts.append("Black" if (bool(args.ls) or bool(args.marker)) else "Color")
+    fig.suptitle(
+        f"Bucket Compare ({used_bucket}) | Style={' + '.join(mode_parts)}",
+        fontsize=int(args.font_size),
+    )
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
@@ -281,6 +321,7 @@ def main() -> None:
         ncol=max(1, min(len(labels), 6)),
         bbox_to_anchor=(0.5, 0.01),
         frameon=False,
+        fontsize=int(args.font_size),
     )
     fig.tight_layout(rect=[0.0, 0.08, 1.0, 0.95])
 

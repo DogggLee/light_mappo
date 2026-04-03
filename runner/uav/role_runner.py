@@ -1960,9 +1960,9 @@ class RoleBasedRunner(object):
         )
         try:
             for env_i in range(n_env):
-                self._print_timed(
-                    "[Eval] env {}/{} save".format(int(env_i), n_env)
-                    )
+                # self._print_timed(
+                #     "[Eval] env {}/{} save".format(int(env_i), n_env)
+                #     )
                 one_result = self.eval_one_env(
                     eval_envs=eval_envs,
                     env_i=int(env_i),
@@ -2088,10 +2088,10 @@ class RoleBasedRunner(object):
 
         # Step 2: rollout单环境episode。
         for eval_step in range(self.eval_episode_length):
-            if eval_step % 100 == 0:
-                self._print_timed(
-                        "[Eval-one-env] step {}/{}".format(int(eval_step), self.eval_episode_length)
-                        )
+            # if eval_step % 100 == 0:
+            #     self._print_timed(
+            #             "[Eval-one-env] step {}/{}".format(int(eval_step), self.eval_episode_length)
+            #             )
             
             actions_env = np.zeros((num_agents, act_dim), dtype=np.float32)
             for agent_id in controlled_agents:
@@ -2184,7 +2184,7 @@ class RoleBasedRunner(object):
                     frames.append(frame.copy())
             obs = next_obs
 
-        self._print_timed("[Eval-one-env] compute alive rate")
+        # self._print_timed("[Eval-one-env] compute alive rate")
                     
         # Step 3: 对未done环境补alive统计。
         if (last_infos is not None) and (len(last_infos) > 0) and float(alive_rate) <= 0.0:
@@ -2195,7 +2195,7 @@ class RoleBasedRunner(object):
                 )
             )
 
-        self._print_timed("[Eval-one-env] save gif")
+        # self._print_timed("[Eval-one-env] save gif")
         # Step 4: 单环境GIF落盘。
         if save_gif:
             out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
@@ -3500,10 +3500,19 @@ class RoleBasedRunner(object):
         # Step 1: 收集待评估模型目录（优先包含models根目录，再包含best_eval_*目录）
         candidate_dirs = []
         root_model_dir = Path(self.save_dir)
-        if root_model_dir.exists() and (model_glob is None):
+        if not root_model_dir.exists():
+            print("Invalid root model dir: ", root_model_dir)
+            return
+
+        if model_glob == ".":
             candidate_dirs.append(root_model_dir)
-        glob_pattern = "best_eval_*" if model_glob is None else str(model_glob)
-        candidate_dirs.extend(sorted(Path(self.best_dir).glob(glob_pattern)))
+        elif model_glob is None:
+            candidate_dirs.append(root_model_dir)
+            glob_pattern = "best_eval_*"
+            candidate_dirs.extend(sorted(Path(self.best_dir).glob(glob_pattern)))
+        else:
+            glob_pattern = str(model_glob)
+            candidate_dirs.extend(sorted(Path(self.best_dir).glob(glob_pattern)))       
 
         model_dirs = []
         for model_dir in candidate_dirs:

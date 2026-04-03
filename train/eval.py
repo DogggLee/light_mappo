@@ -9,10 +9,10 @@ Standalone evaluation entry for saved models under one run_dir.
 
 import os
 import sys
-from pathlib import Path
+from path import Path
 
 # 将项目根目录插入sys.path首位，避免train/train.py遮蔽train包。
-project_root = Path(__file__).resolve().parents[1]
+project_root = os.path.abspath(os.path.join(os.getcwd(), "."))
 project_root_str = str(project_root)
 if project_root_str not in sys.path:
     sys.path.insert(0, project_root_str)
@@ -85,6 +85,32 @@ def main(args):
     输出:
         无。
     """
+    if args.model_glob is None:
+        root = Path(args.run_dir)
+        dirs = root.dirs()
+
+        model_globs = ["."]
+        for d in dirs:
+            model_globs.append(d.name)
+        
+        for model_glob in model_globs:
+            main_one_glob(args, model_glob)
+
+def main_one_glob(args, model_glob):
+    """
+    功能:
+        独立评估入口：重载指定run_dir下保存模型并输出GIF评估结果。
+    输入:
+        args (argparse.Namespace):
+            - config_file (str): 配置文件路径。
+            - run_dir (str): 单次训练run目录路径。
+            - cuda (bool): 是否启用GPU。
+            - total_num_steps (int): 评估记录步数（可选）。
+            - episode (int): 评估标注episode（可选）。
+            - model_glob (str | None): 仅评估匹配该glob的模型目录（相对models目录）。
+    输出:
+        无。
+    """
     # Step 1: 校验run_dir
     run_dir = Path(str(args.run_dir))
     if not run_dir.exists():
@@ -135,7 +161,6 @@ def main(args):
         print(f"Override task file from {merged_cfg.eval.fixed_tasks_file} to {args.task_file}")
         merged_cfg.eval.fixed_tasks_file = args.task_file
         
-
     eval_task_specs, from_external_file = _load_eval_task_specs(merged_cfg)
     if bool(from_external_file) and eval_task_specs is not None:
         merged_cfg.exp.n_eval_rollout_threads = int(len(eval_task_specs))
@@ -195,7 +220,7 @@ def main(args):
     runner._final_eval_saved_best_models(
         total_num_steps=total_num_steps,
         episode=episode,
-        model_glob=args.model_glob,
+        model_glob=model_glob
     )
 
     # Step 5: 资源收尾
