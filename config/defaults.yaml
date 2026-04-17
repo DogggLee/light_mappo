@@ -122,7 +122,7 @@ reward:
   speed_penalty: 0.3
 
   # Escape-gap encirclement reward
-  escape_gap_enable: true
+  escape_gap_enable: false
   escape_gap_hunter_reward_scale: 8.0
   escape_gap_target_reward_scale: 5.0
   # 新版拆分项：包围质量reward（基于encircle_score / gap_open_score）

@@ -1539,6 +1539,8 @@ class RoleBasedRunner(object):
         env_alive_rate = np.full(n_env, 0.0, dtype=np.float32)
         env_active_hunter_count = np.full(n_env, int(eval_num_hunters), dtype=np.int32)
         env_capture_escape_gap_angle = np.full(n_env, np.nan, dtype=np.float32)
+        env_capture_spread_reward = np.full(n_env, np.nan, dtype=np.float32)
+        env_capture_spread_reward = np.full(n_env, np.nan, dtype=np.float32)
 
         for hunter_count, group_info in sorted(groups.items(), key=lambda x: int(x[0])):
             group_env_indices = list(group_info["env_indices"])
@@ -1564,6 +1566,7 @@ class RoleBasedRunner(object):
                 env_alive_rate[global_i] = float(group_result["env_alive_rate"][local_i])
                 env_active_hunter_count[global_i] = int(group_result["env_active_hunter_count"][local_i])
                 env_capture_escape_gap_angle[global_i] = float(group_result["env_capture_escape_gap_angle"][local_i])
+                env_capture_spread_reward[global_i] = float(group_result["env_capture_spread_reward"][local_i])
 
         return self._finalize_eval_metrics_and_logs(
             total_num_steps=total_num_steps,
@@ -1579,6 +1582,7 @@ class RoleBasedRunner(object):
             env_alive_rate=env_alive_rate,
             env_active_hunter_count=env_active_hunter_count,
             env_capture_escape_gap_angle=env_capture_escape_gap_angle,
+            env_capture_spread_reward=env_capture_spread_reward,
         )
 
     def _group_eval_env_indices_by_active_hunters(self, eval_envs):
@@ -1693,6 +1697,7 @@ class RoleBasedRunner(object):
         env_alive_rate = np.zeros(group_n, dtype=np.float32)
         env_active_hunter_count = np.full(group_n, int(num_hunters), dtype=np.int32)
         env_capture_escape_gap_angle = np.full(group_n, np.nan, dtype=np.float32)
+        env_capture_spread_reward = np.full(group_n, np.nan, dtype=np.float32)
         last_infos = [None for _ in range(group_n)]
         save_gifs = bool(save_gifs)
         save_pngs = bool(save_pngs)
@@ -1770,6 +1775,23 @@ class RoleBasedRunner(object):
                     env_capture_step[int(idx)] = int(eval_step + 1)
                     if metric_valid and np.isfinite(metric_angle):
                         env_capture_escape_gap_angle[int(idx)] = float(metric_angle)
+                    spread_vals = []
+                    for hid in range(int(num_hunters)):
+                        if hid >= len(env_infos):
+                            break
+                        agent_info = env_infos[hid]
+                        if not isinstance(agent_info, dict):
+                            continue
+                        if not bool(agent_info.get("active_agent", True)):
+                            continue
+                        if not bool(agent_info.get("alive", False)):
+                            continue
+                        spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
+                    env_capture_spread_reward[int(idx)] = (
+                        float(np.mean(np.asarray(spread_vals, dtype=np.float32)))
+                        if len(spread_vals) > 0
+                        else 0.0
+                    )
 
                 done_env = bool(np.all(dones[int(idx)]))
                 for agent_id in controlled_agents:
@@ -1874,6 +1896,7 @@ class RoleBasedRunner(object):
             "env_alive_rate": env_alive_rate,
             "env_active_hunter_count": env_active_hunter_count,
             "env_capture_escape_gap_angle": env_capture_escape_gap_angle,
+            "env_capture_spread_reward": env_capture_spread_reward,
         }
 
     def _finalize_eval_metrics_and_logs(
@@ -1891,6 +1914,7 @@ class RoleBasedRunner(object):
         env_alive_rate,
         env_active_hunter_count,
         env_capture_escape_gap_angle,
+        env_capture_spread_reward,
     ):
         """
         功能:
@@ -1932,6 +1956,12 @@ class RoleBasedRunner(object):
             max_escape_gap_angle = float(np.mean(env_capture_escape_gap_angle[captured_valid_mask]))
         else:
             max_escape_gap_angle = float("nan")
+        spread_valid_mask = np.logical_and(env_captured, np.isfinite(env_capture_spread_reward))
+        capture_spread_reward = (
+            float(np.mean(env_capture_spread_reward[spread_valid_mask]))
+            if bool(np.any(spread_valid_mask))
+            else float("nan")
+        )
 
         eval_metrics = {
             "eval_reward": eval_reward,
@@ -1940,6 +1970,7 @@ class RoleBasedRunner(object):
             "capture_steps_objective": capture_steps_objective,
             "alive_rate": float(np.mean(env_alive_rate)) if total_eval_episodes > 0 else 0.0,
             "max_escape_gap_angle": float(max_escape_gap_angle),
+            "capture_spread_reward": float(capture_spread_reward),
             "captured_episodes": int(captured_episodes),
             "total_eval_episodes": int(total_eval_episodes),
         }
@@ -1950,6 +1981,7 @@ class RoleBasedRunner(object):
             env_alive_rate=env_alive_rate,
             env_active_hunter_count=env_active_hunter_count,
             env_escape_gap_angle_mean=env_capture_escape_gap_angle,
+            env_capture_spread_reward=env_capture_spread_reward,
         )
 
         self._print_metric_table(
@@ -1964,6 +1996,11 @@ class RoleBasedRunner(object):
                 "max_escape_gap": (
                     "{:.4f}".format(float(max_escape_gap_angle))
                     if np.isfinite(max_escape_gap_angle)
+                    else "NA"
+                ),
+                "capture_spread_reward": (
+                    "{:.4f}".format(float(capture_spread_reward))
+                    if np.isfinite(capture_spread_reward)
                     else "NA"
                 ),
                 "captured_ep": str(int(captured_episodes)),
@@ -2001,6 +2038,12 @@ class RoleBasedRunner(object):
                 self.writter.add_scalars(
                     f"eval/{str(bucket)}/max_escape_gap_angle",
                     {f"eval/{str(bucket)}/max_escape_gap_angle": float(max_escape_gap_angle)},
+                    total_num_steps,
+                )
+            if np.isfinite(capture_spread_reward):
+                self.writter.add_scalars(
+                    f"eval/{str(bucket)}/capture_spread_reward",
+                    {f"eval/{str(bucket)}/capture_spread_reward": float(capture_spread_reward)},
                     total_num_steps,
                 )
 
@@ -2157,6 +2200,7 @@ class RoleBasedRunner(object):
                 env_alive_rate[env_i] = float(one_result["alive_rate"])
                 env_active_hunter_count[env_i] = int(one_result["active_hunter_count"])
                 env_capture_escape_gap_angle[env_i] = float(one_result["capture_escape_gap_angle"])
+                env_capture_spread_reward[env_i] = float(one_result["capture_spread_reward"])
                 self._release_single_eval_env_render(eval_envs=eval_envs, env_i=int(env_i))
                 self._reset_single_eval_env(eval_envs=eval_envs, env_i=int(env_i))
         finally:
@@ -2177,6 +2221,7 @@ class RoleBasedRunner(object):
             env_alive_rate=env_alive_rate,
             env_active_hunter_count=env_active_hunter_count,
             env_capture_escape_gap_angle=env_capture_escape_gap_angle,
+            env_capture_spread_reward=env_capture_spread_reward,
         )
 
     @torch.no_grad()
@@ -2255,6 +2300,7 @@ class RoleBasedRunner(object):
         alive_rate = 0.0
         active_hunter_count = int(num_hunters)
         capture_escape_gap_angle = float("nan")
+        capture_spread_reward = float("nan")
         last_infos = None
         hunter_cum_rewards = np.zeros(num_hunters, dtype=np.float32)
         hunter_cum_reward_history = [[] for _ in range(num_hunters)] if bool(self.eval_step_plot) else None
@@ -2335,6 +2381,23 @@ class RoleBasedRunner(object):
                 capture_step = int(eval_step + 1)
                 if metric_valid and np.isfinite(metric_angle):
                     capture_escape_gap_angle = float(metric_angle)
+                spread_vals = []
+                for hid in range(int(num_hunters)):
+                    if hid >= len(infos):
+                        break
+                    agent_info = infos[hid]
+                    if not isinstance(agent_info, dict):
+                        continue
+                    if not bool(agent_info.get("active_agent", True)):
+                        continue
+                    if not bool(agent_info.get("alive", False)):
+                        continue
+                    spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
+                capture_spread_reward = (
+                    float(np.mean(np.asarray(spread_vals, dtype=np.float32)))
+                    if len(spread_vals) > 0
+                    else 0.0
+                )
 
             done_env = bool(np.all(dones))
             for agent_id in controlled_agents:
@@ -2422,6 +2485,7 @@ class RoleBasedRunner(object):
             "alive_rate": float(alive_rate),
             "active_hunter_count": int(active_hunter_count),
             "capture_escape_gap_angle": float(capture_escape_gap_angle),
+            "capture_spread_reward": float(capture_spread_reward),
         }
 
     def _init_eval_debug_plot(self, env_i, episode, bucket, num_hunters):
@@ -3102,6 +3166,7 @@ class RoleBasedRunner(object):
         env_alive_rate,
         env_active_hunter_count,
         env_escape_gap_angle_mean,
+        env_capture_spread_reward,
     ):
         """
         功能:
@@ -3113,6 +3178,7 @@ class RoleBasedRunner(object):
             env_alive_rate (np.ndarray): shape=(n_env,) 每环境终止alive_rate。
             env_active_hunter_count (np.ndarray): shape=(n_env,) 每环境激活hunter数量。
             env_escape_gap_angle_mean (np.ndarray): shape=(n_env,) 每环境最大潜在可逃脱空间角度均值（NaN表示无效）。
+            env_capture_spread_reward (np.ndarray): shape=(n_env,) 每环境捕获成功时spread reward（NaN表示无效）。
         输出:
             dict[int, dict]: 按hunter数量索引的指标字典。
         """
@@ -3123,6 +3189,7 @@ class RoleBasedRunner(object):
         alive_rates = np.asarray(env_alive_rate, dtype=np.float32).reshape(-1)
         hunter_counts = np.asarray(env_active_hunter_count, dtype=np.int32).reshape(-1)
         escape_gap_means = np.asarray(env_escape_gap_angle_mean, dtype=np.float32).reshape(-1)
+        capture_spread_vals = np.asarray(env_capture_spread_reward, dtype=np.float32).reshape(-1)
         out = {}
 
         # Step 2: 逐hunter数量聚合reward/capture_rate/capture_steps。
@@ -3161,6 +3228,14 @@ class RoleBasedRunner(object):
                 if grouped_escape_angles.size > 0
                 else float("nan")
             )
+            grouped_capture_spread = capture_spread_vals[
+                np.logical_and(mask, np.logical_and(captured_flags, np.isfinite(capture_spread_vals)))
+            ]
+            grouped_capture_spread_mean = (
+                float(np.mean(grouped_capture_spread))
+                if grouped_capture_spread.size > 0
+                else float("nan")
+            )
             out[int(hunter_count)] = {
                 "eval_reward": float(np.mean(rewards[mask])) if total_eval_episodes > 0 else 0.0,
                 "capture_rate": float(captured_episodes / max(1, total_eval_episodes)),
@@ -3168,6 +3243,7 @@ class RoleBasedRunner(object):
                 "capture_steps_objective": float(mean_capture_steps_objective),
                 "alive_rate": float(np.mean(alive_rates[mask])) if total_eval_episodes > 0 else 0.0,
                 "max_escape_gap_angle": float(grouped_escape_angle_mean),
+                "capture_spread_reward": float(grouped_capture_spread_mean),
                 "captured_episodes": int(captured_episodes),
                 "total_eval_episodes": int(total_eval_episodes),
             }

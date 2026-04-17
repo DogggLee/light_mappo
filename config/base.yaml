@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Base+esc8+dyEnv+blcRwd3+MI
+  experiment_name: Alone+Base+spread2+dyEnv
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -31,13 +31,13 @@ Target:
 # UAV pursuit scenario settings
 reward:
   # balance
-  hunter_count_balance_enable: true
+  hunter_count_balance_enable: false
   hunter_count_balance_ref_hunters: 3
   
   # Collision Penalty
   target_collision_penalty: 30.0
   collision_penalty_k: 10.0
-  collision_penalty_cap: 50.0
+  collision_penalty_cap: 30.0
   safe_zone_penalty_scale: 1.0
   
   # Base chase reward
@@ -45,7 +45,7 @@ reward:
   
   base_far_scale: 0.2
   base_near_scale: 1.0
-  base_streak_scale: 0.5
+  base_streak_scale: 0.2
   base_streak_cap: 30
   base_reward_inside_escape_scale: 0.4  # d<=escape_radius时base_reward缩放，避免与escape_gap冲突
 
@@ -55,34 +55,24 @@ reward:
   base_delta_norm_scale: 20.0
 
   # inter-information MI
-  mi_diversity_enable: true
+  mi_diversity_enable: false
   mi_diversity_coef: 2.0
-  mi_diversity_window: 16
-  mi_diversity_temperature: 0.2
   traj_diversity_enable: false
-  traj_diversity_coef: 0.0
-  traj_diversity_window: 16
+  traj_diversity_coef: 2.0
+
+  spread_reward_enable: true
+  spread_reward_coef: 2.0
 
   # Capture reward
   hunter_capture_reward: 15.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: encircle  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle"]
 
   # Speed Penalty
-  speed_penalty: 0.3
+  speed_penalty: 0.2
 
   # Escape-gap encirclement reward
-  escape_gap_enable: true
-  escape_gap_hunter_reward_scale: 8.0
-  escape_gap_target_reward_scale: 5.0
-  # 新版拆分项：包围质量reward（基于encircle_score / gap_open_score）
-  escape_gap_encircle_hunter_reward_scale: 8.0
-  escape_gap_encircle_target_reward_scale: 5.0
-  # 新版拆分项：拦截reward（基于direction_score，速度低于阈值不计算）
-  escape_gap_intercept_hunter_reward_scale: 3.0
-  escape_gap_intercept_target_reward_scale: 6.0
-  escape_gap_quality_worst_penalty_threshold: 0.7  # gap_open_ratio超过该阈值开始惩罚
-  escape_gap_quality_worst_penalty_scale: 5.0
+  escape_gap_enable: false
   escape_radius: 35.0
 
 # Model/network settings
