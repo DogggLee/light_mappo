@@ -1412,6 +1412,15 @@ class UAVPursuitEnv(object):
         self.base_delta_hunter_scale = float(getattr(reward_cfg, "base_delta_hunter_scale", 1.0))
         self.base_delta_target_scale = float(getattr(reward_cfg, "base_delta_target_scale", 1.0))
         self.base_delta_norm_scale = float(max(1e-6, float(getattr(reward_cfg, "base_delta_norm_scale", self.capture_dis))))
+        self.hunter_count_balance_enable = bool(reward_cfg.hunter_count_balance_enable)
+        self.hunter_count_balance_ref_hunters = int(max(1, int(reward_cfg.hunter_count_balance_ref_hunters)))
+        self.mi_diversity_enable = bool(reward_cfg.mi_diversity_enable)
+        self.mi_diversity_coef = float(reward_cfg.mi_diversity_coef)
+        self.mi_diversity_window = int(max(2, int(reward_cfg.mi_diversity_window)))
+        self.mi_diversity_temperature = float(max(1e-6, float(reward_cfg.mi_diversity_temperature)))
+        self.traj_diversity_enable = bool(reward_cfg.traj_diversity_enable)
+        self.traj_diversity_coef = float(reward_cfg.traj_diversity_coef)
+        self.traj_diversity_window = int(max(2, int(reward_cfg.traj_diversity_window)))
         self.hunter_capture_reward = float(reward_cfg.hunter_capture_reward)
         self.target_captured_penalty = float(reward_cfg.target_captured_penalty)
         capture_reward_allocation = str(
@@ -1512,6 +1521,8 @@ class UAVPursuitEnv(object):
         self.active_hunter_mask = np.ones(self.num_hunters, dtype=bool)
         self.active_num_hunters = self.num_hunters
         self.hunter_distance_histories = [deque(maxlen=int(self.base_delta_window)) for _ in range(self.num_hunters)]
+        diversity_hist_len = int(max(self.mi_diversity_window, self.traj_diversity_window))
+        self.hunter_behavior_histories = [deque(maxlen=diversity_hist_len) for _ in range(self.num_hunters)]
         self.task_seed = None
         self.regen_scope = "train"
         self.target_route_id = 0
@@ -1531,8 +1542,11 @@ class UAVPursuitEnv(object):
         self.reward_step_count = 0
         self.hunter_reward_last = 0.0
         self.target_reward_last = 0.0
+        self.last_mi_diversity_score_mean = 0.0
+        self.last_traj_diversity_score_mean = 0.0
         for hid in range(self.num_hunters):
             self.hunter_distance_histories[hid].clear()
+            self.hunter_behavior_histories[hid].clear()
         self.last_coord_summary_cache = np.zeros(
             (self.agent_num, self.coord_summary_feat_dim),
             dtype=np.float32,
@@ -1744,6 +1758,8 @@ class UAVPursuitEnv(object):
         self.reward_step_count = 0
         self.hunter_reward_last = 0.0
         self.target_reward_last = 0.0
+        self.last_mi_diversity_score_mean = 0.0
+        self.last_traj_diversity_score_mean = 0.0
 
         # 步骤2：按给定位置初始化所有agent
         if init_positions.shape != (self.agent_num, 2):
@@ -1753,6 +1769,7 @@ class UAVPursuitEnv(object):
 
         for hid, hunter in enumerate(self.hunters):
             hunter.reset(np.asarray(init_positions[hid], dtype=np.float32))
+            self.hunter_behavior_histories[hid].clear()
             if not bool(self.active_hunter_mask[hid]):
                 hunter.alive = False
                 hunter.position[:] = 0.0
@@ -2109,6 +2126,7 @@ class UAVPursuitEnv(object):
         # 步骤2：执行运动学更新
         for agent, action in zip(self.agents, selected_actions):
             agent.step(action, self.dt, self.world_size)
+        self._update_hunter_diversity_histories(selected_actions=selected_actions)
 
         # 步骤3：碰撞、可见性、记忆更新、捕获判定
         target_collided, collision_rewards = self._handle_collision()
@@ -2176,6 +2194,9 @@ class UAVPursuitEnv(object):
                 "reward_target_streak": float(reward_terms["target_streak_reward"][i]),
                 "reward_capture": float(reward_terms["capture_reward"][i]),
                 "reward_escape_gap": float(reward_terms["escape_gap_reward"][i]),
+                "reward_diversity": float(reward_terms["diversity_reward"][i]),
+                "reward_diversity_mi": float(reward_terms["diversity_mi_reward"][i]),
+                "reward_diversity_traj": float(reward_terms["diversity_traj_reward"][i]),
                 "reward_escape_gap_hunter": float(reward_terms["escape_gap_hunter_reward"][i]),
                 "reward_escape_gap_target": float(reward_terms["escape_gap_target_reward"][i]),
                 "reward_escape_gap_encircle": float(reward_terms["escape_gap_encircle_reward"][i]),
@@ -2191,6 +2212,8 @@ class UAVPursuitEnv(object):
                 "escape_gap_open_score": float(self.target.last_escape_gap_open_score),
                 "escape_gap_hunter_direction_score": float(self.target.last_escape_gap_hunter_direction_score),
                 "escape_gap_target_direction_score": float(self.target.last_escape_gap_target_direction_score),
+                "diversity_mi_score_mean": float(self.last_mi_diversity_score_mean),
+                "diversity_traj_score_mean": float(self.last_traj_diversity_score_mean),
                 "coord_self_is_topk": float(
                     self.last_coord_summary_cache[i, 0]
                     if (
@@ -2918,12 +2941,21 @@ class UAVPursuitEnv(object):
 
         mode = str(self.capture_reward_allocation)
         if mode == "team":
+            eligible_ids = []
             for hid in range(self.num_hunters):
                 if not bool(self.active_hunter_mask[hid]):
                     continue
                 if not bool(self.hunters[hid].alive):
                     continue
-                capture_reward[int(hid)] = float(self.hunter_capture_reward)
+                eligible_ids.append(int(hid))
+            if len(eligible_ids) > 0:
+                if bool(self.hunter_count_balance_enable):
+                    total_pool = float(self.hunter_capture_reward) * float(self.hunter_count_balance_ref_hunters)
+                else:
+                    total_pool = float(self.hunter_capture_reward) * float(len(eligible_ids))
+                per_hunter_reward = float(total_pool) / float(max(1, len(eligible_ids)))
+                for hid in eligible_ids:
+                    capture_reward[int(hid)] = float(per_hunter_reward)
         elif mode == "alone":
             for hid in captor_ids:
                 capture_reward[int(hid)] = float(self.hunter_capture_reward)
@@ -3034,6 +3066,199 @@ class UAVPursuitEnv(object):
         # Step 2: 返回最小非负边界距离
         return float(max(0.0, min(margin_x, margin_y)))
 
+    def _count_active_alive_hunters(self) -> int:
+        """
+        功能:
+            统计当前active且alive的Hunter数量。
+        输入:
+            无。
+        输出:
+            int: active且alive的Hunter数量（最小为0）。
+        """
+        cnt = 0
+        for hid in range(self.num_hunters):
+            if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
+                continue
+            cnt += 1
+        return int(max(0, cnt))
+
+    def _get_hunter_count_balance_scale(self) -> float:
+        """
+        功能:
+            计算团队奖励的人数平衡缩放系数。
+        输入:
+            无。
+        输出:
+            float: 团队奖励缩放系数。
+        """
+        if not bool(self.hunter_count_balance_enable):
+            return 1.0
+        active_alive = int(max(1, self._count_active_alive_hunters()))
+        return float(self.hunter_count_balance_ref_hunters) / float(active_alive)
+
+    def _build_hunter_behavior_feature(self, hunter_id: int, action_norm: np.ndarray) -> np.ndarray:
+        """
+        功能:
+            构造Hunter行为特征，用于多样性奖励计算。
+        输入:
+            hunter_id (int): Hunter索引。
+            action_norm (np.ndarray): 当前步执行动作，shape=(2,)。
+        输出:
+            np.ndarray: 行为特征向量，shape=(6,)。
+        """
+        hid = int(hunter_id)
+        hunter = self.hunters[hid]
+        scale = max(float(self.world_size), 1e-6)
+        action = np.clip(np.asarray(action_norm, dtype=np.float32).reshape(2), -1.0, 1.0)
+        vel_norm = np.asarray(hunter.velocity, dtype=np.float32) / float(max(hunter.max_speed, 1e-6))
+        rel_target = np.asarray(self.target.position, dtype=np.float32) - np.asarray(hunter.position, dtype=np.float32)
+        rel_target = rel_target / float(scale)
+        return np.concatenate([action, vel_norm, rel_target], axis=0).astype(np.float32)
+
+    def _update_hunter_diversity_histories(self, selected_actions: List[np.ndarray]):
+        """
+        功能:
+            在环境step后更新Hunter行为历史缓存。
+        输入:
+            selected_actions (List[np.ndarray]): 本步各agent执行动作列表。
+        输出:
+            无。
+        """
+        if selected_actions is None:
+            return
+        for hid in range(self.num_hunters):
+            if not bool(self.active_hunter_mask[hid]):
+                continue
+            if not bool(self.hunters[hid].alive):
+                continue
+            if hid >= len(selected_actions):
+                continue
+            feat = self._build_hunter_behavior_feature(hid, selected_actions[hid])
+            self.hunter_behavior_histories[hid].append(feat.copy())
+
+    @staticmethod
+    def _cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
+        """
+        功能:
+            计算两个向量的余弦相似度。
+        输入:
+            vec_a (np.ndarray): 向量a。
+            vec_b (np.ndarray): 向量b。
+        输出:
+            float: 余弦相似度，范围[-1,1]。
+        """
+        a = np.asarray(vec_a, dtype=np.float32).reshape(-1)
+        b = np.asarray(vec_b, dtype=np.float32).reshape(-1)
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na <= 1e-8 or nb <= 1e-8:
+            return 0.0
+        return float(np.clip(float(np.dot(a, b)) / (na * nb), -1.0, 1.0))
+
+    def _compute_mi_diversity_reward(self) -> np.ndarray:
+        """
+        功能:
+            基于InfoNCE近似计算Hunter行为互信息多样性奖励。
+        输入:
+            无。
+        输出:
+            np.ndarray: MI多样性奖励，shape=(agent_num,)。
+        """
+        rewards = np.zeros(self.agent_num, dtype=np.float32)
+        if (not bool(self.mi_diversity_enable)) or self.num_hunters <= 1:
+            self.last_mi_diversity_score_mean = 0.0
+            return rewards
+
+        temp = float(self.mi_diversity_temperature)
+        scores = []
+        for hid in range(self.num_hunters):
+            if not bool(self.active_hunter_mask[hid]) or (not bool(self.hunters[hid].alive)):
+                continue
+            hist_i = self.hunter_behavior_histories[hid]
+            if len(hist_i) < 2:
+                continue
+
+            query = np.asarray(hist_i[-1], dtype=np.float32)
+            positive = np.mean(np.asarray(list(hist_i)[:-1], dtype=np.float32), axis=0)
+            sim_pos = self._cosine_similarity(query, positive)
+
+            neg_sims = []
+            for oid in range(self.num_hunters):
+                if oid == hid:
+                    continue
+                if not bool(self.active_hunter_mask[oid]) or (not bool(self.hunters[oid].alive)):
+                    continue
+                hist_o = self.hunter_behavior_histories[oid]
+                if len(hist_o) <= 0:
+                    continue
+                neg_sims.append(self._cosine_similarity(query, np.asarray(hist_o[-1], dtype=np.float32)))
+            if len(neg_sims) <= 0:
+                continue
+
+            logits = np.asarray([sim_pos] + neg_sims, dtype=np.float32) / float(temp)
+            logits = logits - float(np.max(logits))
+            exp_logits = np.exp(logits)
+            denom = float(np.sum(exp_logits))
+            if denom <= 1e-12:
+                continue
+            p_pos = float(exp_logits[0] / denom)
+            class_num = int(len(logits))
+            baseline = 1.0 / float(class_num)
+            norm_score = float((p_pos - baseline) / max(1e-8, 1.0 - baseline))
+            norm_score = float(np.clip(norm_score, -1.0, 1.0))
+            rewards[hid] = float(self.mi_diversity_coef) * norm_score
+            scores.append(norm_score)
+
+        self.last_mi_diversity_score_mean = float(np.mean(scores)) if len(scores) > 0 else 0.0
+        return rewards
+
+    def _compute_traj_diversity_reward(self) -> np.ndarray:
+        """
+        功能:
+            基于近期位移轨迹的去相关性计算Hunter多样性奖励。
+        输入:
+            无。
+        输出:
+            np.ndarray: 轨迹多样性奖励，shape=(agent_num,)。
+        """
+        rewards = np.zeros(self.agent_num, dtype=np.float32)
+        if (not bool(self.traj_diversity_enable)) or self.num_hunters <= 1:
+            self.last_traj_diversity_score_mean = 0.0
+            return rewards
+
+        win = int(max(2, self.traj_diversity_window))
+        feat_by_hid = {}
+        for hid in range(self.num_hunters):
+            if not bool(self.active_hunter_mask[hid]) or (not bool(self.hunters[hid].alive)):
+                continue
+            traj = np.asarray(self.hunters[hid].trajectory, dtype=np.float32)
+            if traj.shape[0] < win + 1:
+                continue
+            seg = traj[-(win + 1) :]
+            delta = np.diff(seg, axis=0).reshape(-1)
+            feat_by_hid[int(hid)] = np.asarray(delta, dtype=np.float32)
+
+        if len(feat_by_hid) <= 1:
+            self.last_traj_diversity_score_mean = 0.0
+            return rewards
+
+        score_vals = []
+        for hid, feat in feat_by_hid.items():
+            pair_sims = []
+            for oid, feat_o in feat_by_hid.items():
+                if int(oid) == int(hid):
+                    continue
+                pair_sims.append(self._cosine_similarity(feat, feat_o))
+            if len(pair_sims) <= 0:
+                continue
+            mean_sim = float(np.mean(pair_sims))
+            traj_score = float(np.clip(-mean_sim, -1.0, 1.0))
+            rewards[int(hid)] = float(self.traj_diversity_coef) * traj_score
+            score_vals.append(traj_score)
+
+        self.last_traj_diversity_score_mean = float(np.mean(score_vals)) if len(score_vals) > 0 else 0.0
+        return rewards
+
     def _compute_rewards(self, captured, collision_rewards):
         """
         功能:
@@ -3061,6 +3286,9 @@ class UAVPursuitEnv(object):
         escape_gap_encircle_target_reward = np.zeros(self.agent_num, dtype=np.float32)
         escape_gap_intercept_hunter_reward = np.zeros(self.agent_num, dtype=np.float32)
         escape_gap_intercept_target_reward = np.zeros(self.agent_num, dtype=np.float32)
+        diversity_mi_reward = np.zeros(self.agent_num, dtype=np.float32)
+        diversity_traj_reward = np.zeros(self.agent_num, dtype=np.float32)
+        diversity_reward = np.zeros(self.agent_num, dtype=np.float32)
 
         dist_scale = max(float(self.world_size), 1e-6)
         capture_dis_safe = max(float(self.capture_dis), 1e-6)
@@ -3207,6 +3435,39 @@ class UAVPursuitEnv(object):
         ).astype(np.float32)
         escape_gap_reward = (escape_gap_hunter_reward + escape_gap_target_reward).astype(np.float32)
 
+        # Step 2.05: 团队奖励人数平衡缩放（用于跨hunter数量训练对齐）。
+        team_scale = float(self._get_hunter_count_balance_scale())
+        escape_gap_encircle_hunter_reward = (
+            escape_gap_encircle_hunter_reward * float(team_scale)
+        ).astype(np.float32)
+        escape_gap_intercept_hunter_reward = (
+            escape_gap_intercept_hunter_reward * float(team_scale)
+        ).astype(np.float32)
+        escape_gap_encircle_target_reward = (
+            escape_gap_encircle_target_reward * float(team_scale)
+        ).astype(np.float32)
+        escape_gap_intercept_target_reward = (
+            escape_gap_intercept_target_reward * float(team_scale)
+        ).astype(np.float32)
+        escape_gap_encircle_reward = (
+            escape_gap_encircle_hunter_reward + escape_gap_encircle_target_reward
+        ).astype(np.float32)
+        escape_gap_intercept_reward = (
+            escape_gap_intercept_hunter_reward + escape_gap_intercept_target_reward
+        ).astype(np.float32)
+        escape_gap_hunter_reward = (
+            escape_gap_encircle_hunter_reward + escape_gap_intercept_hunter_reward
+        ).astype(np.float32)
+        escape_gap_target_reward = (
+            escape_gap_encircle_target_reward + escape_gap_intercept_target_reward
+        ).astype(np.float32)
+        escape_gap_reward = (escape_gap_hunter_reward + escape_gap_target_reward).astype(np.float32)
+
+        # Step 2.1: Hunter策略多样性奖励（MI-ID + Traj-Decorr）。
+        diversity_mi_reward = self._compute_mi_diversity_reward().astype(np.float32)
+        diversity_traj_reward = self._compute_traj_diversity_reward().astype(np.float32)
+        diversity_reward = (diversity_mi_reward + diversity_traj_reward).astype(np.float32)
+
         # Step 3: 归一化速度线性惩罚，避免数值爆炸。 0速度也有惩罚，加速任务执行
         speed_penalty_vals = []
         for a in self.agents:
@@ -3223,6 +3484,7 @@ class UAVPursuitEnv(object):
             + target_streak_reward
             + capture_reward
             + escape_gap_reward
+            + diversity_reward
             + collision_rewards
             + speed_penalty_reward
         ).astype(np.float32)
@@ -3242,6 +3504,9 @@ class UAVPursuitEnv(object):
             "escape_gap_encircle_target_reward": escape_gap_encircle_target_reward.astype(np.float32),
             "escape_gap_intercept_hunter_reward": escape_gap_intercept_hunter_reward.astype(np.float32),
             "escape_gap_intercept_target_reward": escape_gap_intercept_target_reward.astype(np.float32),
+            "diversity_reward": diversity_reward.astype(np.float32),
+            "diversity_mi_reward": diversity_mi_reward.astype(np.float32),
+            "diversity_traj_reward": diversity_traj_reward.astype(np.float32),
             "collision_reward": collision_rewards.astype(np.float32),
             "speed_penalty_reward": speed_penalty_reward.astype(np.float32),
         }

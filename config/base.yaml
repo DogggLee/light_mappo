@@ -1,15 +1,15 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: v3v1_encircle_Base_esc8_Zone
+  experiment_name: Base+esc8+dyEnv+blcRwd3+MI
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
 
 # Environment settings (common)
 env:
-  env_name: TgtNoColli_rndP50_Pursuit-Ablation
+  env_name: Tech-Ablation
   world_size: 200
-  episode_length: 400 # max steps per episode
+  episode_length: 300 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true
 
@@ -31,7 +31,7 @@ Target:
 # UAV pursuit scenario settings
 reward:
   # balance
-  hunter_count_balance_enable: false
+  hunter_count_balance_enable: true
   hunter_count_balance_ref_hunters: 3
   
   # Collision Penalty
@@ -54,6 +54,14 @@ reward:
   base_delta_target_scale: 1.0
   base_delta_norm_scale: 20.0
 
+  # inter-information MI
+  mi_diversity_enable: true
+  mi_diversity_coef: 2.0
+  mi_diversity_window: 16
+  mi_diversity_temperature: 0.2
+  traj_diversity_enable: false
+  traj_diversity_coef: 0.0
+  traj_diversity_window: 16
 
   # Capture reward
   hunter_capture_reward: 15.0
@@ -87,8 +95,8 @@ model:
 
 # Optimizer settings
 optim:
-  lr: 0.0005
-  critic_lr: 0.0005
+  lr: 0.001
+  critic_lr: 0.001
   opti_eps: 0.00001
   weight_decay: 0
 
@@ -98,11 +106,11 @@ schedule:
 
 logging:
   log_gif: false         # 训练阶段是否按规则保存GIF
-  log_png: true
+  log_png: false
 
 eval:
   val_interval: 40
-  eval_episode_length: 600
+  eval_episode_length: 300
   fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
 
 domain_randomization:
