@@ -1421,6 +1421,8 @@ class UAVPursuitEnv(object):
         self.traj_diversity_enable = bool(reward_cfg.traj_diversity_enable)
         self.traj_diversity_coef = float(reward_cfg.traj_diversity_coef)
         self.traj_diversity_window = int(max(2, int(reward_cfg.traj_diversity_window)))
+        self.spread_reward_enable = bool(reward_cfg.spread_reward_enable)
+        self.spread_reward_coef = float(reward_cfg.spread_reward_coef)
         self.hunter_capture_reward = float(reward_cfg.hunter_capture_reward)
         self.target_captured_penalty = float(reward_cfg.target_captured_penalty)
         capture_reward_allocation = str(
@@ -1544,6 +1546,7 @@ class UAVPursuitEnv(object):
         self.target_reward_last = 0.0
         self.last_mi_diversity_score_mean = 0.0
         self.last_traj_diversity_score_mean = 0.0
+        self.last_spread_score_mean = 0.0
         for hid in range(self.num_hunters):
             self.hunter_distance_histories[hid].clear()
             self.hunter_behavior_histories[hid].clear()
@@ -1760,6 +1763,7 @@ class UAVPursuitEnv(object):
         self.target_reward_last = 0.0
         self.last_mi_diversity_score_mean = 0.0
         self.last_traj_diversity_score_mean = 0.0
+        self.last_spread_score_mean = 0.0
 
         # 步骤2：按给定位置初始化所有agent
         if init_positions.shape != (self.agent_num, 2):
@@ -2197,6 +2201,7 @@ class UAVPursuitEnv(object):
                 "reward_diversity": float(reward_terms["diversity_reward"][i]),
                 "reward_diversity_mi": float(reward_terms["diversity_mi_reward"][i]),
                 "reward_diversity_traj": float(reward_terms["diversity_traj_reward"][i]),
+                "reward_spread": float(reward_terms["spread_reward"][i]),
                 "reward_escape_gap_hunter": float(reward_terms["escape_gap_hunter_reward"][i]),
                 "reward_escape_gap_target": float(reward_terms["escape_gap_target_reward"][i]),
                 "reward_escape_gap_encircle": float(reward_terms["escape_gap_encircle_reward"][i]),
@@ -2214,6 +2219,7 @@ class UAVPursuitEnv(object):
                 "escape_gap_target_direction_score": float(self.target.last_escape_gap_target_direction_score),
                 "diversity_mi_score_mean": float(self.last_mi_diversity_score_mean),
                 "diversity_traj_score_mean": float(self.last_traj_diversity_score_mean),
+                "spread_score_mean": float(self.last_spread_score_mean),
                 "coord_self_is_topk": float(
                     self.last_coord_summary_cache[i, 0]
                     if (
@@ -3259,6 +3265,51 @@ class UAVPursuitEnv(object):
         self.last_traj_diversity_score_mean = float(np.mean(score_vals)) if len(score_vals) > 0 else 0.0
         return rewards
 
+    def _compute_spread_reward(self) -> np.ndarray:
+        """
+        功能:
+            基于“hunter->target单位向量几何中心偏移”计算包围分散奖励。
+        输入:
+            无。
+        输出:
+            np.ndarray: spread奖励，shape=(agent_num,)。
+        """
+        rewards = np.zeros(self.agent_num, dtype=np.float32)
+        if (not bool(self.spread_reward_enable)) or float(self.spread_reward_coef) == 0.0:
+            self.last_spread_score_mean = 0.0
+            return rewards
+
+        unit_vectors = []
+        valid_hunter_ids = []
+        target_pos = np.asarray(self.target.position, dtype=np.float32)
+        for hid in range(self.num_hunters):
+            if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
+                continue
+            rel = target_pos - np.asarray(self.hunters[hid].position, dtype=np.float32)
+            rel_norm = float(np.linalg.norm(rel))
+            if rel_norm <= 1e-8:
+                continue
+            unit_vectors.append((rel / rel_norm).astype(np.float32))
+            valid_hunter_ids.append(int(hid))
+
+        if len(valid_hunter_ids) < 2:
+            self.last_spread_score_mean = 0.0
+            return rewards
+
+        unit_arr = np.asarray(unit_vectors, dtype=np.float32)
+        centroid = np.mean(unit_arr, axis=0)
+        centroid_dist = float(np.linalg.norm(centroid))
+        centroid_dist = float(np.clip(centroid_dist, 0.0, 1.0))
+        spread_score = float(1.0 - centroid_dist)
+        spread_score = float(np.clip(spread_score, 0.0, 1.0))
+
+        team_scale = float(self._get_hunter_count_balance_scale())
+        per_hunter_reward = float(self.spread_reward_coef) * spread_score * float(team_scale)
+        for hid in valid_hunter_ids:
+            rewards[int(hid)] = float(per_hunter_reward)
+        self.last_spread_score_mean = spread_score
+        return rewards
+
     def _compute_rewards(self, captured, collision_rewards):
         """
         功能:
@@ -3289,6 +3340,7 @@ class UAVPursuitEnv(object):
         diversity_mi_reward = np.zeros(self.agent_num, dtype=np.float32)
         diversity_traj_reward = np.zeros(self.agent_num, dtype=np.float32)
         diversity_reward = np.zeros(self.agent_num, dtype=np.float32)
+        spread_reward = np.zeros(self.agent_num, dtype=np.float32)
 
         dist_scale = max(float(self.world_size), 1e-6)
         capture_dis_safe = max(float(self.capture_dis), 1e-6)
@@ -3467,6 +3519,7 @@ class UAVPursuitEnv(object):
         diversity_mi_reward = self._compute_mi_diversity_reward().astype(np.float32)
         diversity_traj_reward = self._compute_traj_diversity_reward().astype(np.float32)
         diversity_reward = (diversity_mi_reward + diversity_traj_reward).astype(np.float32)
+        spread_reward = self._compute_spread_reward().astype(np.float32)
 
         # Step 3: 归一化速度线性惩罚，避免数值爆炸。 0速度也有惩罚，加速任务执行
         speed_penalty_vals = []
@@ -3485,6 +3538,7 @@ class UAVPursuitEnv(object):
             + capture_reward
             + escape_gap_reward
             + diversity_reward
+            + spread_reward
             + collision_rewards
             + speed_penalty_reward
         ).astype(np.float32)
@@ -3507,6 +3561,7 @@ class UAVPursuitEnv(object):
             "diversity_reward": diversity_reward.astype(np.float32),
             "diversity_mi_reward": diversity_mi_reward.astype(np.float32),
             "diversity_traj_reward": diversity_traj_reward.astype(np.float32),
+            "spread_reward": spread_reward.astype(np.float32),
             "collision_reward": collision_rewards.astype(np.float32),
             "speed_penalty_reward": speed_penalty_reward.astype(np.float32),
         }

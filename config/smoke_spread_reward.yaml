@@ -1,0 +1,38 @@
+exp:
+  algorithm_name: rmappo
+  experiment_name: smoke_spread_reward
+  seed: 7
+  cuda: false
+  n_rollout_threads: 1
+  n_eval_rollout_threads: 1
+  num_env_steps: 80
+
+env:
+  env_name: smoke_spread_reward
+  episode_length: 40
+  max_hunters_num: 3
+  num_explorers: 0
+  target_policy_source: escape
+
+reward:
+  hunter_count_balance_enable: true
+  hunter_count_balance_ref_hunters: 3
+  mi_diversity_enable: true
+  mi_diversity_coef: 0.05
+  mi_diversity_window: 4
+  mi_diversity_temperature: 0.2
+  traj_diversity_enable: true
+  traj_diversity_coef: 0.05
+  traj_diversity_window: 4
+  spread_reward_enable: true
+  spread_reward_coef: 0.5
+
+logging:
+  save_interval: 1
+  log_interval: 1
+  log_gif: false
+  log_png: false
+  gif_frame_interval: 10
+
+eval:
+  use_eval: false

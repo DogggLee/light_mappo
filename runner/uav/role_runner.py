@@ -439,6 +439,7 @@ class RoleBasedRunner(object):
             episode_hunter_reward = 0.0
             episode_target_reward = 0.0
             episode_hunter_reward_by_env = np.zeros(self.n_rollout_threads, dtype=np.float32)
+            episode_capture_spread_by_env = np.full(self.n_rollout_threads, np.nan, dtype=np.float32)
             episode_active_hunter_count_by_env = np.full(self.n_rollout_threads, -1, dtype=np.int32)
             episode_active_hunter_slots = None
             last_infos = None
@@ -478,6 +479,31 @@ class RoleBasedRunner(object):
                     axis=1,
                     dtype=np.float32,
                 ).astype(np.float32)
+                for env_i, env_infos in enumerate(infos):
+                    if np.isfinite(float(episode_capture_spread_by_env[env_i])):
+                        continue
+                    if env_infos is None or len(env_infos) == 0:
+                        continue
+                    captured_now = any(bool(agent_info.get("captured", False)) for agent_info in env_infos)
+                    if not bool(captured_now):
+                        continue
+                    spread_vals = []
+                    for hid in range(self.train_max_hunters_num):
+                        if hid >= len(env_infos):
+                            break
+                        agent_info = env_infos[hid]
+                        if not isinstance(agent_info, dict):
+                            continue
+                        if not bool(agent_info.get("active_agent", True)):
+                            continue
+                        if not bool(agent_info.get("alive", False)):
+                            continue
+                        spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
+                    episode_capture_spread_by_env[env_i] = (
+                        float(np.mean(np.asarray(spread_vals, dtype=np.float32)))
+                        if len(spread_vals) > 0
+                        else 0.0
+                    )
 
                 # 本次episode阶段active的hunters数量
                 if episode_active_hunter_slots is None:
@@ -620,10 +646,23 @@ class RoleBasedRunner(object):
                     env_hunter_reward_sums=episode_hunter_reward_by_env,
                     env_active_hunter_counts=episode_active_hunter_count_by_env,
                 )
+                hunter_bucket_capture_spread_stats = self._log_train_capture_spread_bucket_metrics(
+                    total_num_steps=total_num_steps,
+                    env_capture_spread_values=episode_capture_spread_by_env,
+                    env_active_hunter_counts=episode_active_hunter_count_by_env,
+                )
                 if len(hunter_bucket_reward_stats) > 0:
                     self._print_metric_table(
                         "TrainRewardBuckets",
                         {f"h{int(k)}": f"{float(hunter_bucket_reward_stats[k]):.4f}" for k in sorted(hunter_bucket_reward_stats.keys())},
+                    )
+                if len(hunter_bucket_capture_spread_stats) > 0:
+                    self._print_metric_table(
+                        "TrainCaptureSpreadBuckets",
+                        {
+                            f"h{int(k)}": f"{float(hunter_bucket_capture_spread_stats[k]):.4f}"
+                            for k in sorted(hunter_bucket_capture_spread_stats.keys())
+                        },
                     )
                 self.log_train(train_infos, total_num_steps)
 
@@ -2957,6 +2996,45 @@ class RoleBasedRunner(object):
             val = float(np.mean(np.asarray(bucket_values[cnt], dtype=np.float32)))
             out[int(cnt)] = float(val)
             tb_key = f"train/hunter_reward_mean_num_hunters_{int(cnt)}"
+            self.writter.add_scalars(tb_key, {tb_key: float(val)}, total_num_steps)
+        return out
+
+    def _log_train_capture_spread_bucket_metrics(
+        self,
+        total_num_steps,
+        env_capture_spread_values,
+        env_active_hunter_counts,
+    ):
+        """
+        功能:
+            按active hunter数量分桶统计“捕获成功时”的spread reward，并写入TensorBoard。
+        输入:
+            total_num_steps (int): 当前累计环境步数。
+            env_capture_spread_values (np.ndarray): 各环境捕获成功时spread reward均值，shape=(n_env,)。
+            env_active_hunter_counts (np.ndarray): 各环境active hunter数量，shape=(n_env,)。
+        输出:
+            dict[int, float]: 分桶后的捕获时spread reward均值。
+        """
+        spread_vals = np.asarray(env_capture_spread_values, dtype=np.float32).reshape(-1)
+        hunter_counts = np.asarray(env_active_hunter_counts, dtype=np.int32).reshape(-1)
+        if spread_vals.size == 0 or hunter_counts.size == 0:
+            return {}
+        n = int(min(spread_vals.size, hunter_counts.size))
+        bucket_values = {}
+        for i in range(n):
+            spread_val = float(spread_vals[i])
+            if not np.isfinite(spread_val):
+                continue
+            cnt = int(max(1, int(hunter_counts[i])))
+            if cnt not in bucket_values:
+                bucket_values[cnt] = []
+            bucket_values[cnt].append(spread_val)
+
+        out = {}
+        for cnt in sorted(bucket_values.keys()):
+            val = float(np.mean(np.asarray(bucket_values[cnt], dtype=np.float32)))
+            out[int(cnt)] = float(val)
+            tb_key = f"train/capture_spread_reward_mean_num_hunters_{int(cnt)}"
             self.writter.add_scalars(tb_key, {tb_key: float(val)}, total_num_steps)
         return out
 

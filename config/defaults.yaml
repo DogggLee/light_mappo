@@ -110,6 +110,8 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 0.0
   traj_diversity_window: 16
+  spread_reward_enable: false
+  spread_reward_coef: 0.0
 
   # Capture reward
   hunter_capture_reward: 15.0
