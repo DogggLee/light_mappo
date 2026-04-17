@@ -747,7 +747,10 @@ class SwarmSimulationCore:
 
         for idx in range(int(self.mission.targets)):
             policy_source = str(policy_plan[idx]).lower()
-            patrol_route = self.patrol_routes[idx % len(self.patrol_routes)] if len(self.patrol_routes) > 0 else None
+            sampled_route_index = -1
+            if policy_source == "patrol" and len(self.patrol_routes) > 0:
+                sampled_route_index = int(self.rng.randint(0, len(self.patrol_routes)))
+            patrol_route = self.patrol_routes[sampled_route_index] if sampled_route_index >= 0 else None
             agent = TargetAgent(
                 agent_id=idx,
                 max_speed=float(self.mission.target_max_speed),
@@ -785,7 +788,7 @@ class SwarmSimulationCore:
                 min_dist=float(self.mission.target_min_init_separation),
             )
             if policy_source == "patrol" and len(self.patrol_routes) > 0:
-                route_index = int(idx % len(self.patrol_routes))
+                route_index = int(sampled_route_index) if int(sampled_route_index) >= 0 else 0
                 waypoint_count = len(self.patrol_routes[route_index])
                 waypoint_idx = self._select_patrol_start_waypoint_index(
                     route=self.patrol_routes[route_index],
@@ -1803,18 +1806,27 @@ class SwarmSimulationCore:
         perc = float(getattr(self.cfg.Explorer, "perception_radius", -1))
         if perc <= 0:
             perc = float(max(5.0, self.cfg.Explorer.safe_dis))
-        spacing = float(max(2.0, 2.0 * perc - perc * float(np.clip(overlap_rate, 0.0, 0.95))))
-        margin = float(max(2.0, perc * 0.5))
+        overlap = float(np.clip(overlap_rate, 0.0, 0.95))
+        spacing = float(max(2.0, 2.0 * perc - perc * overlap))
+        # 弓字航线与边界的计算基于 (1-overlap_rate) * perception_radius。
+        boundary_margin = float((1.0 - overlap) * perc)
+        boundary_margin = float(np.clip(boundary_margin, 0.0, max(0.0, world_size - 1e-3)))
         y_vals = []
-        y = float(world_size - margin)
-        while y >= -float(world_size - margin):
+        y_top = float(world_size - boundary_margin)
+        y_bottom = float(-world_size + boundary_margin)
+        y = float(y_top)
+        while y >= y_bottom:
             y_vals.append(y)
             y -= spacing
+        if len(y_vals) > 0 and y_vals[-1] > y_bottom:
+            # 兜底补一条靠近底边的扫描线，避免底部漏扫。
+            eps = max(1e-4, boundary_margin * 1e-3)
+            y_vals.append(float(-world_size + max(0.0, boundary_margin - eps)))
         if len(y_vals) == 0:
             y_vals = [0.0]
 
-        x_min = -float(world_size - margin)
-        x_max = float(world_size - margin)
+        x_min = -float(world_size - boundary_margin)
+        x_max = float(world_size - boundary_margin)
         full_route: List[np.ndarray] = []
         left_to_right = True
         for yy in y_vals:
@@ -1826,27 +1838,53 @@ class SwarmSimulationCore:
                 full_route.append(np.array([x_min, yy], dtype=np.float32))
             left_to_right = not left_to_right
 
-        # 先规划单Explorer全局覆盖航线，再按Explorer数量做连续等分。
+        # 先规划单Explorer全局覆盖航线，再按Explorer数量做“路径弧长”连续等分，
+        # 以尽量保证每个Explorer承担的搜索路径长度一致。
         paths: List[List[np.ndarray]] = []
         total_wp = len(full_route)
         if total_wp <= 0:
             return [[self._sample_position()] for _ in range(max(1, num_explorers))]
+        route_pts = [np.asarray(p, dtype=np.float32).copy() for p in full_route]
+        if len(route_pts) <= 1:
+            return [[route_pts[0].copy()] for _ in range(max(1, num_explorers))]
 
-        boundaries = [int(math.floor(i * total_wp / max(1, num_explorers))) for i in range(num_explorers)]
-        boundaries.append(total_wp)
-        for eid in range(num_explorers):
-            start = int(boundaries[eid])
-            end = int(boundaries[eid + 1])
-            indices = list(range(start, end))
-            # 连接相邻Explorer的航线端点，确保覆盖路径连续。
-            if end < total_wp:
-                indices.append(int(end))
-            if len(indices) == 0:
-                idx = int(min(start, total_wp - 1))
-                indices = [idx]
-                if idx + 1 < total_wp:
-                    indices.append(idx + 1)
-            chunk = [full_route[i].copy() for i in indices]
+        cum_dist = [0.0]
+        for i in range(1, len(route_pts)):
+            seg = float(np.linalg.norm(route_pts[i] - route_pts[i - 1]))
+            cum_dist.append(cum_dist[-1] + seg)
+        total_len = float(cum_dist[-1])
+
+        if total_len <= 1e-8:
+            return [[route_pts[0].copy()] for _ in range(max(1, num_explorers))]
+
+        num_exp = int(max(1, num_explorers))
+        cum_np = np.asarray(cum_dist, dtype=np.float64)
+
+        def _point_at(dist_val: float) -> np.ndarray:
+            d = float(np.clip(dist_val, 0.0, total_len))
+            idx = int(np.searchsorted(cum_np, d, side="right") - 1)
+            idx = int(np.clip(idx, 0, len(route_pts) - 2))
+            d0 = float(cum_np[idx])
+            d1 = float(cum_np[idx + 1])
+            if d1 - d0 <= 1e-8:
+                return route_pts[idx + 1].copy()
+            t = float((d - d0) / (d1 - d0))
+            return ((1.0 - t) * route_pts[idx] + t * route_pts[idx + 1]).astype(np.float32)
+
+        for eid in range(num_exp):
+            start_d = total_len * float(eid) / float(num_exp)
+            end_d = total_len * float(eid + 1) / float(num_exp)
+            chunk: List[np.ndarray] = [_point_at(start_d)]
+
+            for vid in range(1, len(route_pts) - 1):
+                cv = float(cum_np[vid])
+                if start_d < cv < end_d:
+                    chunk.append(route_pts[vid].copy())
+
+            end_pt = _point_at(end_d)
+            if float(np.linalg.norm(end_pt - chunk[-1])) > 1e-6:
+                chunk.append(end_pt)
+
             if len(chunk) == 0:
                 chunk = [self._sample_position()]
 
@@ -2129,6 +2167,8 @@ class SwarmSimGUI:
         sim_config_path: Optional[Path] = None,
         model_config_path: Optional[Path] = None,
         grey_mode: bool = False,
+        font_size: float = 8.0,
+        marker_size: float = 40.0,
     ):
         if tk is None:
             raise RuntimeError("tkinter is unavailable in current environment")
@@ -2136,6 +2176,9 @@ class SwarmSimGUI:
         self.sim_config_path = sim_config_path
         self.model_config_path = model_config_path
         self.grey_mode = bool(grey_mode)
+        self.font_size = float(max(1.0, float(font_size)))
+        self.marker_size = float(max(1.0, float(marker_size)))
+        self.target_label_offset: Optional[float] = None
         self.model_cfg = {"hunters": {}, "targets": {}}
         self.root = tk.Tk()
         self.root.title("Swarm Search + Pursuit Simulator")
@@ -2246,10 +2289,12 @@ class SwarmSimGUI:
         env_tab = ttk.Frame(notebook, padding=4)
         plan_tab = ttk.Frame(notebook, padding=4)
         assign_tab = ttk.Frame(notebook, padding=4)
+        draw_tab = ttk.Frame(notebook, padding=4)
         pursuit_tab = ttk.Frame(notebook, padding=4)
         notebook.add(env_tab, text="环境配置")
         notebook.add(plan_tab, text="预规划")
         notebook.add(assign_tab, text="任务分配")
+        notebook.add(draw_tab, text="绘制")
         notebook.add(pursuit_tab, text="目标追捕")
 
         self._add_input(env_tab, "world_size", str(self.sim.mission.world_size))
@@ -2278,6 +2323,18 @@ class SwarmSimGUI:
         self._add_input(assign_tab, "explorer_endurance", str(self.sim.mission.explorer_total_endurance))
         self._add_input(assign_tab, "hunter_endurance", str(self.sim.mission.hunter_total_endurance))
         self._add_input(assign_tab, "idle_endurance_cost", str(self.sim.mission.endurance_idle_cost))
+
+        self._add_input(draw_tab, "draw_font_size", str(self.font_size))
+        self._add_input(draw_tab, "draw_marker_size", str(self.marker_size))
+        self._add_input(draw_tab, "draw_target_label_offset", "auto")
+        ttk.Label(
+            draw_tab,
+            text="目标ID偏移距离: 输入数字或 auto",
+            anchor="w",
+        ).pack(fill=tk.X, pady=(2, 4))
+        ttk.Button(draw_tab, text="应用绘制参数", command=self._on_apply_draw_config).pack(
+            side=tk.LEFT, padx=2, pady=(2, 2)
+        )
 
         # pursuit tab: model selectors and management buttons
         self._add_model_selectors(pursuit_tab)
@@ -2550,6 +2607,28 @@ class SwarmSimGUI:
             "max_assign_dist": float(weights.max_assign_dist),
         }
 
+    def _read_draw_config(self) -> Tuple[float, float, Optional[float]]:
+        """
+        功能:
+            读取绘制参数（字体、marker、目标ID偏移）。
+        输入:
+            无。
+        输出:
+            Tuple[float,float,Optional[float]]: (font_size, marker_size, target_label_offset)。
+        """
+        font_size = float(self.inputs["draw_font_size"].get())
+        marker_size = float(self.inputs["draw_marker_size"].get())
+        label_raw = str(self.inputs["draw_target_label_offset"].get()).strip()
+        if label_raw.lower() == "auto" or label_raw == "":
+            target_label_offset = None
+        else:
+            target_label_offset = float(label_raw)
+        return (
+            float(max(1.0, font_size)),
+            float(max(1.0, marker_size)),
+            None if target_label_offset is None else float(max(0.0, target_label_offset)),
+        )
+
     def _save_sim_config_section(self, mission_updates: Optional[dict] = None, assignment_updates: Optional[dict] = None):
         """
         功能:
@@ -2641,6 +2720,26 @@ class SwarmSimGUI:
         except Exception as e:
             if messagebox is not None:
                 messagebox.showerror("保存失败", str(e))
+
+    def _on_apply_draw_config(self):
+        """
+        功能:
+            应用绘制参数并立即重绘画面。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        try:
+            font_size, marker_size, target_label_offset = self._read_draw_config()
+            self.font_size = float(font_size)
+            self.marker_size = float(marker_size)
+            self.target_label_offset = target_label_offset
+            self.status_var.set("已应用绘制参数")
+            self._draw_scene()
+        except Exception as e:
+            if messagebox is not None:
+                messagebox.showerror("绘制参数错误", str(e))
 
     def _apply_modes(self):
         """
@@ -2914,16 +3013,35 @@ class SwarmSimGUI:
         show_pursuit_trace = bool(getattr(self, "show_pursuit_trace_var", None).get())
         show_assignment = bool(getattr(self, "show_assignment_var", None).get())
         grey_mode = bool(getattr(self, "grey_mode", False))
+        font_size = float(getattr(self, "font_size", 8.0))
+        marker_size = float(getattr(self, "marker_size", 40.0))
+        marker_scale = math.sqrt(max(1e-6, marker_size / 40.0))
+        explorer_marker_size = marker_size * (45.0 / 40.0)
+        hunter_marker_size = marker_size * (35.0 / 40.0)
+        target_marker_size = marker_size * 2.0
+        explorer_exhaust_marker_size = marker_size * (34.0 / 40.0)
+        hunter_exhaust_marker_size = marker_size * (28.0 / 40.0)
+        legend_marker_size = 7.0 * marker_scale
+        legend_target_marker_size = 8.0 * marker_scale
+        auto_target_text_offset = max(1.2, 0.02 * ws)
+        target_text_offset = (
+            float(self.target_label_offset)
+            if self.target_label_offset is not None
+            else float(auto_target_text_offset)
+        )
         self.ax.set_xlim(-ws, ws)
         self.ax.set_ylim(-ws, ws)
         self.ax.set_aspect("equal", adjustable="box")
         self.ax.grid(True, alpha=0.2)
+        self.ax.tick_params(axis="both", labelsize=font_size)
 
         if grey_mode:
             explorer_colors = {"IDLE": "black", "PREP": "black", "PUR": "black", "EXH": "dimgray"}
             hunter_colors = {"IDLE": "black", "PREP": "black", "PUR": "black", "EXH": "dimgray"}
-            explorer_marker = "^"
-            hunter_marker = "o"
+            explorer_markers = {"IDLE": "s", "PREP": "s", "PUR": "D", "EXH": "s"}
+            hunter_markers = {"IDLE": "^", "PREP": "^", "PUR": "v", "EXH": "^"}
+            explorer_alphas = {"IDLE": 0.35, "PREP": 1.0, "PUR": 1.0, "EXH": 0.65}
+            hunter_alphas = {"IDLE": 0.35, "PREP": 1.0, "PUR": 1.0, "EXH": 0.65}
             explorer_path_color = "0.45"
             hunter_path_color = "0.45"
             pursuit_trace_color = "0.1"
@@ -2933,9 +3051,9 @@ class SwarmSimGUI:
             assign_explorer_color = "black"
             assign_hunter_color = "black"
             assign_explorer_ls = "-"
-            assign_hunter_ls = "-."
+            assign_hunter_ls = "-"
             pending_explorer_ls = "--"
-            pending_hunter_ls = ":"
+            pending_hunter_ls = "--"
             explorer_perception_face = "0.7"
             target_capture_face = "0.5"
             target_capture_edge = "0.45"
@@ -2952,8 +3070,10 @@ class SwarmSimGUI:
                 "PUR": "tab:red",
                 "EXH": "tab:gray",
             }
-            explorer_marker = "^"
-            hunter_marker = "o"
+            explorer_markers = {"IDLE": "^", "PREP": "^", "PUR": "^", "EXH": "^"}
+            hunter_markers = {"IDLE": "o", "PREP": "o", "PUR": "o", "EXH": "o"}
+            explorer_alphas = {"IDLE": 1.0, "PREP": 1.0, "PUR": 1.0, "EXH": 1.0}
+            hunter_alphas = {"IDLE": 1.0, "PREP": 1.0, "PUR": 1.0, "EXH": 1.0}
             explorer_path_color = "tab:green"
             hunter_path_color = "tab:blue"
             pursuit_trace_color = "tab:red"
@@ -2974,6 +3094,8 @@ class SwarmSimGUI:
             p = ex.agent.position
             phase = self._get_explorer_phase(ex)
             color = explorer_colors.get(phase, "tab:green")
+            marker = explorer_markers.get(phase, "s" if grey_mode else "^")
+            alpha = float(explorer_alphas.get(phase, 1.0))
             if show_explorer_perception and explorer_perception_radius > 0:
                 ex_circle = plt.Circle(
                     (float(p[0]), float(p[1])),
@@ -2983,21 +3105,9 @@ class SwarmSimGUI:
                     alpha=0.08,
                 )
                 self.ax.add_patch(ex_circle)
-            self.ax.scatter([p[0]], [p[1]], c=color, s=45, marker=explorer_marker)
-            if grey_mode and phase in {"PREP", "PUR"}:
-                box_half = max(1.1, ws * 0.012)
-                box = plt.Rectangle(
-                    (float(p[0]) - box_half, float(p[1]) - box_half),
-                    2.0 * box_half,
-                    2.0 * box_half,
-                    fill=False,
-                    edgecolor="black",
-                    linewidth=1.1,
-                    linestyle="--" if phase == "PREP" else "-",
-                )
-                self.ax.add_patch(box)
+            self.ax.scatter([p[0]], [p[1]], c=color, s=explorer_marker_size, marker=marker, alpha=alpha)
             if grey_mode and phase == "EXH":
-                self.ax.scatter([p[0]], [p[1]], c="black", s=34, marker="x", linewidths=1.0)
+                self.ax.scatter([p[0]], [p[1]], c="black", s=explorer_exhaust_marker_size, marker="x", linewidths=1.0)
             if len(ex.path) > 1:
                 path_np = np.asarray(ex.path)
                 self.ax.plot(path_np[:, 0], path_np[:, 1], color=explorer_path_color, alpha=0.15)
@@ -3006,21 +3116,11 @@ class SwarmSimGUI:
             p = h.agent.position
             phase = self._get_hunter_phase(h)
             color = hunter_colors.get(phase, "tab:blue")
-            self.ax.scatter([p[0]], [p[1]], c=color, s=35, marker=hunter_marker)
-            if grey_mode and phase in {"PREP", "PUR"}:
-                box_half = max(1.0, ws * 0.010)
-                box = plt.Rectangle(
-                    (float(p[0]) - box_half, float(p[1]) - box_half),
-                    2.0 * box_half,
-                    2.0 * box_half,
-                    fill=False,
-                    edgecolor="black",
-                    linewidth=1.0,
-                    linestyle="--" if phase == "PREP" else "-",
-                )
-                self.ax.add_patch(box)
+            marker = hunter_markers.get(phase, "^" if grey_mode else "o")
+            alpha = float(hunter_alphas.get(phase, 1.0))
+            self.ax.scatter([p[0]], [p[1]], c=color, s=hunter_marker_size, marker=marker, alpha=alpha)
             if grey_mode and phase == "EXH":
-                self.ax.scatter([p[0]], [p[1]], c="black", s=28, marker="x", linewidths=1.0)
+                self.ax.scatter([p[0]], [p[1]], c="black", s=hunter_exhaust_marker_size, marker="x", linewidths=1.0)
             if h.standby_mode == "split" and len(h.standby_path) > 1:
                 path_np = np.asarray(h.standby_path)
                 self.ax.plot(path_np[:, 0], path_np[:, 1], color=hunter_path_color, alpha=0.12)
@@ -3038,7 +3138,7 @@ class SwarmSimGUI:
                 continue
             p = t.agent.position
             policy_name = str(t.policy_type).lower()
-            if policy_name == "patrol" and len(getattr(t.agent, "patrol_waypoints", [])) > 1:
+            if show_all_targets and policy_name == "patrol" and len(getattr(t.agent, "patrol_waypoints", [])) > 1:
                 patrol_np = np.asarray(t.agent.patrol_waypoints, dtype=np.float32)
                 self.ax.plot(
                     patrol_np[:, 0],
@@ -3059,13 +3159,14 @@ class SwarmSimGUI:
                 )
                 self.ax.add_patch(cap_circle)
             color = target_color_pool if t.in_pool else target_color_hidden
-            self.ax.scatter([p[0]], [p[1]], c=color, s=40, marker="X")
-            self.ax.text(
-                float(p[0]) + 1.0,
-                float(p[1]) + 1.0,
-                f"T{tid}:{policy_name}",
-                fontsize=8,
-            )
+            self.ax.scatter([p[0]], [p[1]], c=color, s=target_marker_size, marker="X")
+            if show_all_targets:
+                self.ax.text(
+                    float(p[0]) + target_text_offset,
+                    float(p[1]) + target_text_offset,
+                    f"T{tid}",
+                    fontsize=font_size,
+                )
 
         if show_assignment:
             # Applied assignment visualization (solid)
@@ -3134,46 +3235,70 @@ class SwarmSimGUI:
                 Line2D(
                     [0],
                     [0],
-                    marker=explorer_marker,
+                    marker="s",
                     color="black",
                     linestyle="None",
                     markerfacecolor="black",
                     markeredgecolor="black",
-                    markersize=7,
-                    label=self._t("Explorer", "Explorer"),
-                ),
-                Line2D(
-                    [0],
-                    [0],
-                    marker=hunter_marker,
-                    color="black",
-                    linestyle="None",
-                    markerfacecolor="black",
-                    markeredgecolor="black",
-                    markersize=7,
-                    label=self._t("Hunter", "Hunter"),
+                    markersize=legend_marker_size,
+                    alpha=0.35,
+                    label=self._t("Explorer-空闲", "Explorer-Idle"),
                 ),
                 Line2D(
                     [0],
                     [0],
                     marker="s",
                     color="black",
-                    linestyle="--",
-                    markerfacecolor="none",
+                    linestyle="None",
+                    markerfacecolor="black",
                     markeredgecolor="black",
-                    markersize=9,
-                    label=self._t("预备状态叠加框", "Prep Overlay"),
+                    markersize=legend_marker_size,
+                    label=self._t("Explorer-预备", "Explorer-Prep"),
                 ),
                 Line2D(
                     [0],
                     [0],
-                    marker="s",
+                    marker="D",
                     color="black",
-                    linestyle="-",
-                    markerfacecolor="none",
+                    linestyle="None",
+                    markerfacecolor="black",
                     markeredgecolor="black",
-                    markersize=9,
-                    label=self._t("追捕状态叠加框", "Pursuit Overlay"),
+                    markersize=legend_marker_size,
+                    label=self._t("Explorer-追捕", "Explorer-Pursuit"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="^",
+                    color="black",
+                    linestyle="None",
+                    markerfacecolor="black",
+                    markeredgecolor="black",
+                    markersize=legend_marker_size,
+                    alpha=0.35,
+                    label=self._t("Hunter-空闲", "Hunter-Idle"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="^",
+                    color="black",
+                    linestyle="None",
+                    markerfacecolor="black",
+                    markeredgecolor="black",
+                    markersize=legend_marker_size,
+                    label=self._t("Hunter-预备", "Hunter-Prep"),
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="v",
+                    color="black",
+                    linestyle="None",
+                    markerfacecolor="black",
+                    markeredgecolor="black",
+                    markersize=legend_marker_size,
+                    label=self._t("Hunter-追捕", "Hunter-Pursuit"),
                 ),
                 Line2D(
                     [0],
@@ -3181,7 +3306,7 @@ class SwarmSimGUI:
                     marker="x",
                     color="dimgray",
                     linestyle="None",
-                    markersize=8,
+                    markersize=legend_target_marker_size,
                     label=self._t("耗尽", "Exhausted"),
                 ),
                 Line2D(
@@ -3192,7 +3317,7 @@ class SwarmSimGUI:
                     color=target_color_hidden,
                     markeredgecolor=target_color_hidden,
                     markerfacecolor=target_color_hidden,
-                    markersize=8,
+                    markersize=legend_target_marker_size,
                     label="Target",
                 ),
             ]
@@ -3201,67 +3326,67 @@ class SwarmSimGUI:
                 Line2D(
                     [0],
                     [0],
-                    marker=explorer_marker,
+                    marker="^",
                     color=explorer_colors["IDLE"],
                     linestyle="None",
                     markerfacecolor=explorer_colors["IDLE"],
                     markeredgecolor=explorer_colors["IDLE"],
-                    markersize=7,
+                    markersize=legend_marker_size,
                     label=self._t("Explorer-空闲", "Explorer-Idle"),
                 ),
                 Line2D(
                     [0],
                     [0],
-                    marker=explorer_marker,
+                    marker="^",
                     color=explorer_colors["PREP"],
                     linestyle="None",
                     markerfacecolor=explorer_colors["PREP"],
                     markeredgecolor=explorer_colors["PREP"],
-                    markersize=7,
+                    markersize=legend_marker_size,
                     label=self._t("Explorer-预备", "Explorer-Prep"),
                 ),
                 Line2D(
                     [0],
                     [0],
-                    marker=explorer_marker,
+                    marker="^",
                     color=explorer_colors["PUR"],
                     linestyle="None",
                     markerfacecolor=explorer_colors["PUR"],
                     markeredgecolor=explorer_colors["PUR"],
-                    markersize=7,
+                    markersize=legend_marker_size,
                     label=self._t("Explorer-追捕", "Explorer-Pursuit"),
                 ),
                 Line2D(
                     [0],
                     [0],
-                    marker=hunter_marker,
+                    marker="o",
                     color=hunter_colors["IDLE"],
                     linestyle="None",
                     markerfacecolor=hunter_colors["IDLE"],
                     markeredgecolor=hunter_colors["IDLE"],
-                    markersize=7,
+                    markersize=legend_marker_size,
                     label=self._t("Hunter-空闲", "Hunter-Idle"),
                 ),
                 Line2D(
                     [0],
                     [0],
-                    marker=hunter_marker,
+                    marker="o",
                     color=hunter_colors["PREP"],
                     linestyle="None",
                     markerfacecolor=hunter_colors["PREP"],
                     markeredgecolor=hunter_colors["PREP"],
-                    markersize=7,
+                    markersize=legend_marker_size,
                     label=self._t("Hunter-预备", "Hunter-Prep"),
                 ),
                 Line2D(
                     [0],
                     [0],
-                    marker=hunter_marker,
+                    marker="o",
                     color=hunter_colors["PUR"],
                     linestyle="None",
                     markerfacecolor=hunter_colors["PUR"],
                     markeredgecolor=hunter_colors["PUR"],
-                    markersize=7,
+                    markersize=legend_marker_size,
                     label=self._t("Hunter-追捕", "Hunter-Pursuit"),
                 ),
                 Line2D(
@@ -3272,7 +3397,7 @@ class SwarmSimGUI:
                     color=target_color_hidden,
                     markeredgecolor=target_color_hidden,
                     markerfacecolor=target_color_hidden,
-                    markersize=8,
+                    markersize=legend_target_marker_size,
                     label="Target",
                 ),
             ]
@@ -3327,7 +3452,7 @@ class SwarmSimGUI:
             loc="upper center",
             bbox_to_anchor=(0.5, -0.08),
             ncol=2,
-            fontsize=8,
+            fontsize=font_size,
             framealpha=0.9,
             borderaxespad=0.0,
         )
@@ -3339,7 +3464,11 @@ class SwarmSimGUI:
             f"captured={int(summary['captured_targets'])}, "
             f"freeH={int(summary['free_hunters'])}, freeE={int(summary['free_explorers'])}"
         )
-        self.ax.set_title(status_text)
+        self.ax.set_title(
+            status_text,
+            fontsize=font_size,
+            pad=max(10.0, float(font_size) * 1.5),
+        )
         self._draw_pool_panel()
         self.canvas.draw_idle()
         self._update_pool_text()
@@ -3806,6 +3935,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to hunter/target actor model config yaml",
     )
+    parser.add_argument(
+        "--font_size",
+        type=float,
+        default=8.0,
+        help="Font size for axis ticks, legend and target labels in environment visualization.",
+    )
+    parser.add_argument(
+        "--marker_size",
+        type=float,
+        default=40.0,
+        help="Base marker size for Explorer/Hunter/Target in environment visualization.",
+    )
     return parser
 
 
@@ -3866,6 +4007,8 @@ def main():
         sim_config_path=sim_cfg_path,
         model_config_path=model_cfg_path,
         grey_mode=bool(args.grey),
+        font_size=float(args.font_size),
+        marker_size=float(args.marker_size),
     )
     app.run()
 
