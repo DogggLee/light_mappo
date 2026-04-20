@@ -18,6 +18,8 @@ env:
   dt: 0.2
   max_hunters_num: 3
   num_explorers: 0
+  obs_mode: legacy  # Choices: ["legacy", "rel_polar"]
+  action_frame: global  # Choices: ["global", "local"]
   neighbor_N: 2
   hunters_in_zone: true
   target_avoid_hunter_zone: true

@@ -188,25 +188,32 @@ class ObsVisApp:
         self.reward_panel = reward_panel
         self.reward_row = reward_row
 
+        self.reward_tabs = ttk.Notebook(reward_row)
+        self.reward_tabs.pack(fill=tk.BOTH, expand=True)
+        reward_tab_inst = tk.Frame(self.reward_tabs)
+        reward_tab_cum = tk.Frame(self.reward_tabs)
+        self.reward_tabs.add(reward_tab_inst, text="Instant Reward")
+        self.reward_tabs.add(reward_tab_cum, text="Cumulative Reward")
+
         self.reward_canvas_inst = tk.Canvas(
-            reward_row,
+            reward_tab_inst,
             width=560,
             height=160,
             bg="white",
             highlightthickness=1,
             highlightbackground="#BBBBBB",
         )
-        self.reward_canvas_inst.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 3))
+        self.reward_canvas_inst.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.reward_canvas_inst.bind("<Configure>", lambda _e: self._draw_reward_plots())
         self.reward_canvas_cum = tk.Canvas(
-            reward_row,
+            reward_tab_cum,
             width=560,
             height=160,
             bg="white",
             highlightthickness=1,
             highlightbackground="#BBBBBB",
         )
-        self.reward_canvas_cum.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(3, 0))
+        self.reward_canvas_cum.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.reward_canvas_cum.bind("<Configure>", lambda _e: self._draw_reward_plots())
 
         self.status_var = tk.StringVar(value="")
@@ -291,6 +298,14 @@ class ObsVisApp:
         )
         self.reward_agent_checks_frame = tk.Frame(reward_agent_frame)
         self.reward_agent_checks_frame.pack(fill=tk.X, pady=(6, 0))
+        self.reward_alias_var = tk.StringVar(value="Alias: (none)")
+        tk.Label(
+            reward_agent_frame,
+            textvariable=self.reward_alias_var,
+            justify=tk.LEFT,
+            anchor="w",
+            fg="#555555",
+        ).pack(fill=tk.X, pady=(6, 0))
 
         edit_frame = tk.LabelFrame(tab_agent, text="Selected Agent Control", padx=6, pady=6)
         edit_frame.pack(fill=tk.X, pady=(8, 0))
@@ -432,8 +447,30 @@ class ObsVisApp:
         actions = np.zeros((self.core_env.agent_num, self.core_env.action_dim), dtype=np.float32)
         for i, agent in enumerate(self.core_env.agents):
             max_speed = max(float(agent.max_speed), 1e-6)
-            actions[i] = np.clip(np.asarray(agent.velocity, dtype=np.float32) / max_speed, -1.0, 1.0)
+            global_action = np.asarray(agent.velocity, dtype=np.float32) / max_speed
+            actions[i] = self._convert_global_action_to_env_action(global_action, agent)
         return actions
+
+    def _convert_global_action_to_env_action(self, action_global: np.ndarray, agent) -> np.ndarray:
+        """
+        功能:
+            将全局动作统一映射为当前env.action_frame下应输入的动作。
+        输入:
+            action_global (np.ndarray): 全局坐标动作，shape=(2,)。
+            agent (BaseAgent): 对应智能体，用于local模式下坐标变换。
+        输出:
+            np.ndarray: 可直接送入env.step的动作（global/local取决于action_frame）。
+        """
+        if self.core_env is None:
+            return np.clip(np.asarray(action_global, dtype=np.float32).reshape(2), -1.0, 1.0)
+        action_global = np.clip(np.asarray(action_global, dtype=np.float32).reshape(2), -1.0, 1.0)
+        if str(getattr(self.core_env, "action_frame", "global")).lower() == "local":
+            return np.clip(
+                self.core_env._global_action_to_local(action_global, agent.heading),
+                -1.0,
+                1.0,
+            ).astype(np.float32)
+        return action_global.astype(np.float32)
 
     def _record_reward_terms(self, infos: list[dict]) -> None:
         n_agent = len(infos)
@@ -495,7 +532,8 @@ class ObsVisApp:
         if self.env_wrapper is None or self.core_env is None or self.selected_index is None:
             return
         actions = self._build_actions_from_current_velocity()
-        actions[self.selected_index] = np.clip(selected_action.astype(np.float32), -1.0, 1.0)
+        agent = self.core_env.agents[self.selected_index]
+        actions[self.selected_index] = self._convert_global_action_to_env_action(selected_action, agent)
         obs, rews, dones, infos = self.env_wrapper.step(actions)
         self.obs_cache = [obs[i].copy() for i in range(obs.shape[0])]
         self.last_step_rewards = rews.copy()
@@ -839,6 +877,7 @@ class ObsVisApp:
         if self.core_env is None:
             return
         if not self.reward_term_history:
+            self.reward_alias_var.set("Alias: (none)")
             for cv, title in (
                 (self.reward_canvas_inst, "Instant Reward"),
                 (self.reward_canvas_cum, "Cumulative Reward"),
@@ -884,6 +923,7 @@ class ObsVisApp:
                 )
 
         if not inst_series:
+            self.reward_alias_var.set("Alias: (none)")
             return
 
         cum_series = []
@@ -899,6 +939,7 @@ class ObsVisApp:
             )
         self._draw_single_reward_plot(self.reward_canvas_inst, inst_series, "Instant Reward Terms")
         self._draw_single_reward_plot(self.reward_canvas_cum, cum_series, "Cumulative Reward Terms")
+        self._update_reward_alias_hint(term_names=[item["term"] for item in inst_series])
 
     def _on_reward_height_change(self, _event=None) -> None:
         panel_h = int(np.clip(self.reward_panel_height_var.get(), 220, 700))
@@ -906,7 +947,7 @@ class ObsVisApp:
             self.reward_panel.configure(height=panel_h)
         controls_h = 44
         inner_h = max(120, panel_h - controls_h)
-        one_h = max(60, inner_h // 2 - 6)
+        one_h = max(120, inner_h - 10)
         if hasattr(self, "reward_canvas_inst"):
             self.reward_canvas_inst.configure(height=one_h)
         if hasattr(self, "reward_canvas_cum"):
@@ -989,7 +1030,9 @@ class ObsVisApp:
 
         legend_y0 = y0 + 4
         canvas.create_text(x0 + 2, legend_y0, text="Color:", anchor="nw", fill="#444444")
-        term_col_w = 110
+        term_label_map = {term: self._short_reward_term_label(term) for term in term_names}
+        max_term_len = max((len(lbl) for lbl in term_label_map.values()), default=8)
+        term_col_w = max(90, min(220, 28 + max_term_len * 7))
         term_per_row = max(1, int((x1 - (x0 + 52)) // term_col_w))
         for i, term in enumerate(term_names):
             sample = next(s for s in series if s["term"] == term)
@@ -998,7 +1041,13 @@ class ObsVisApp:
             lx = x0 + 52 + col * term_col_w
             ly = legend_y0 + 6 + row * 12
             canvas.create_line(lx, ly, lx + 12, ly, fill=sample["color"], width=2)
-            canvas.create_text(lx + 16, ly, text=term, anchor="w", fill="#444444")
+            canvas.create_text(
+                lx + 16,
+                ly,
+                text=term_label_map[term],
+                anchor="w",
+                fill="#444444",
+            )
 
         style_row_y = legend_y0 + 14 + ((max(1, (len(term_names) + term_per_row - 1) // term_per_row) - 1) * 12)
         canvas.create_text(x0 + 2, style_row_y, text="Line:", anchor="nw", fill="#444444")
@@ -1015,6 +1064,33 @@ class ObsVisApp:
                 kwargs["dash"] = sample["dash"]
             canvas.create_line(lx, ly, lx + 12, ly, **kwargs)
             canvas.create_text(lx + 16, ly, text=f"A{aid}", anchor="w", fill="#444444")
+
+    @staticmethod
+    def _short_reward_term_label(term: str) -> str:
+        """
+        功能:
+            对reward term名称做短标签化，避免图例重叠。
+        输入:
+            term (str): 原始term名（已去除reward_前缀）。
+        输出:
+            str: 短标签。
+        """
+        alias = {
+            "escape_gap_intercept_target": "esc_itc_t",
+            "escape_gap_intercept_hunter": "esc_itc_h",
+            "escape_gap_encircle_target": "esc_enc_t",
+            "escape_gap_encircle_hunter": "esc_enc_h",
+            "escape_gap_hunter_direction_score": "esc_h_dir",
+            "escape_gap_target_direction_score": "esc_t_dir",
+            "diversity_mi": "div_mi",
+            "diversity_traj": "div_traj",
+            "speed_penalty": "spd_pen",
+        }
+        if term in alias:
+            return alias[term]
+        if len(term) <= 16:
+            return term
+        return term[:13] + "..."
 
     def _get_reward_term_color(self, term: str) -> str:
         if term in self.reward_term_color_cache:

@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Team+Base
+  experiment_name: Alone+dis
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -12,6 +12,7 @@ env:
   episode_length: 300 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true
+  obs_mode: legacy  # Choices: ["legacy", "rel_polar"]
 
   neighbor_N: 3
   coord_summary_obs_enable: false
@@ -41,7 +42,7 @@ reward:
   safe_zone_penalty_scale: 1.0
   
   # Base chase reward
-  base_reward_mode: delta_window  # Choices: ["legacy", "delta_window"]
+  base_reward_mode: legacy  # Choices: ["legacy", "delta_window"]
   
   base_far_scale: 0.2
   base_near_scale: 1.0
@@ -66,10 +67,10 @@ reward:
   # Capture reward
   hunter_capture_reward: 15.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: team  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle"]
 
   # Speed Penalty
-  speed_penalty: 0.2
+  speed_penalty: 0.0
 
   # Escape-gap encirclement reward
   escape_gap_enable: false

@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Team+Base
+  experiment_name: lr5_polarLoc_Alone+dis+spread2+dyEnv
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -12,6 +12,8 @@ env:
   episode_length: 300 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true
+  obs_mode: rel_polar  # Choices: ["legacy", "rel_polar"]
+  action_frame: local
 
   neighbor_N: 3
   coord_summary_obs_enable: false
@@ -35,15 +37,15 @@ reward:
   hunter_count_balance_ref_hunters: 3
   
   # Collision Penalty
-  target_collision_penalty: 30.0
-  collision_penalty_k: 10.0
-  collision_penalty_cap: 30.0
+  target_collision_penalty: 5.0
+  collision_penalty_k: 2.0
+  collision_penalty_cap: 5.0
   safe_zone_penalty_scale: 1.0
   
   # Base chase reward
   base_reward_mode: delta_window  # Choices: ["legacy", "delta_window"]
   
-  base_far_scale: 0.2
+  base_far_scale: 0.5
   base_near_scale: 1.0
   base_streak_scale: 0.2
   base_streak_cap: 30
@@ -55,21 +57,21 @@ reward:
   base_delta_norm_scale: 20.0
 
   # inter-information MI
-  mi_diversity_enable: false
+  mi_diversity_enable: true
   mi_diversity_coef: 2.0
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_enable: false
+  spread_reward_enable: true
   spread_reward_coef: 2.0
 
   # Capture reward
   hunter_capture_reward: 15.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: team  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle"]
 
   # Speed Penalty
-  speed_penalty: 0.2
+  speed_penalty: 0.02
 
   # Escape-gap encirclement reward
   escape_gap_enable: false
@@ -82,17 +84,16 @@ model:
   layer_N: 1
   use_recurrent_policy: true
 
-
 # Optimizer settings
 optim:
-  lr: 0.001
-  critic_lr: 0.001
+  lr: 0.0005
+  critic_lr: 0.0005
   opti_eps: 0.00001
   weight_decay: 0
 
 # Learning rate schedule
 schedule:
-  use_linear_lr_decay: true
+  use_linear_lr_decay: false
 
 logging:
   log_gif: false         # 训练阶段是否按规则保存GIF
@@ -105,7 +106,7 @@ eval:
 
 domain_randomization:
   train_split:
-    enable: false
+    enable: true
     regen_interval_episode: 20
     regen_prob: 1.0
     hunter_count_choices: [1, 2, 3]

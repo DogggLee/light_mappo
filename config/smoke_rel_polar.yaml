@@ -1,0 +1,26 @@
+exp:
+  algorithm_name: rmappo
+  experiment_name: smoke_rel_polar
+  seed: 7
+  cuda: false
+  n_rollout_threads: 1
+  n_eval_rollout_threads: 1
+  num_env_steps: 40
+
+env:
+  env_name: smoke_rel_polar
+  episode_length: 40
+  max_hunters_num: 3
+  num_explorers: 0
+  obs_mode: rel_polar
+  neighbor_N: 2
+  target_policy_source: escape
+
+logging:
+  save_interval: 1
+  log_interval: 1
+  log_gif: false
+  log_png: false
+
+eval:
+  use_eval: false
