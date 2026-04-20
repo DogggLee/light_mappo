@@ -1422,6 +1422,7 @@ class RoleBasedRunner(object):
                 "capture_steps": float(self.eval_episode_length),
                 "alive_rate": 0.0,
                 "max_escape_gap_angle": float("nan"),
+                "capture_spread_reward": float("nan"),
                 "captured_episodes": 0,
                 "total_eval_episodes": 0,
             }
@@ -1476,6 +1477,7 @@ class RoleBasedRunner(object):
             env_alive_rate=group_result["env_alive_rate"],
             env_active_hunter_count=group_result["env_active_hunter_count"],
             env_capture_escape_gap_angle=group_result["env_capture_escape_gap_angle"],
+            env_capture_spread_reward=group_result["env_capture_spread_reward"],
         )
 
     @torch.no_grad()
@@ -1517,6 +1519,7 @@ class RoleBasedRunner(object):
                 "capture_steps": float(self.eval_episode_length),
                 "alive_rate": 0.0,
                 "max_escape_gap_angle": float("nan"),
+                "capture_spread_reward": float("nan"),
                 "captured_episodes": 0,
                 "total_eval_episodes": 0,
             }
@@ -1539,6 +1542,7 @@ class RoleBasedRunner(object):
         env_alive_rate = np.full(n_env, 0.0, dtype=np.float32)
         env_active_hunter_count = np.full(n_env, int(eval_num_hunters), dtype=np.int32)
         env_capture_escape_gap_angle = np.full(n_env, np.nan, dtype=np.float32)
+        env_capture_spread_reward = np.full(n_env, np.nan, dtype=np.float32)
         env_capture_spread_reward = np.full(n_env, np.nan, dtype=np.float32)
         env_capture_spread_reward = np.full(n_env, np.nan, dtype=np.float32)
 
@@ -2142,6 +2146,7 @@ class RoleBasedRunner(object):
                 "capture_steps": float(self.eval_episode_length),
                 "alive_rate": 0.0,
                 "max_escape_gap_angle": float("nan"),
+                "capture_spread_reward": float("nan"),
                 "captured_episodes": 0,
                 "total_eval_episodes": 0,
             }
@@ -2166,6 +2171,7 @@ class RoleBasedRunner(object):
         env_alive_rate = np.full(n_env, 0.0, dtype=np.float32)
         env_active_hunter_count = np.full(n_env, int(eval_num_hunters), dtype=np.int32)
         env_capture_escape_gap_angle = np.full(n_env, np.nan, dtype=np.float32)
+        env_capture_spread_reward = np.full(n_env, np.nan, dtype=np.float32)
 
         gif_env_ids = list(range(n_env))
         if gif_env_limit is not None:
@@ -3304,6 +3310,7 @@ class RoleBasedRunner(object):
             "capture_steps",
             "alive_rate",
             "max_escape_gap_angle",
+            "capture_spread_reward",
         ]
         metric_titles = {
             "eval_reward": "Eval Reward",
@@ -3311,6 +3318,7 @@ class RoleBasedRunner(object):
             "capture_steps": "Capture Steps",
             "alive_rate": "Alive Rate",
             "max_escape_gap_angle": "Max Potential Escape Gap Angle (deg)",
+            "capture_spread_reward": "Capture Spread Reward",
         }
         bucket_style = {
             "fixed": {"label": "fixed", "color": "#1f77b4", "marker": "o"},
@@ -3367,7 +3375,7 @@ class RoleBasedRunner(object):
                     markersize=4.5,
                 )
                 if len(x_vals) > 0:
-                    if metric_name in ("eval_reward", "capture_rate", "alive_rate"):
+                    if metric_name in ("eval_reward", "capture_rate", "alive_rate", "capture_spread_reward"):
                         best_pos = int(np.argmax(np.asarray(y_vals, dtype=np.float32)))
                     else:
                         best_pos = int(np.argmin(np.asarray(y_vals, dtype=np.float32)))
@@ -3470,6 +3478,7 @@ class RoleBasedRunner(object):
                 "capture_steps_objective": float(self.eval_episode_length),
                 "alive_rate": 0.0,
                 "max_escape_gap_angle": float("nan"),
+                "capture_spread_reward": float("nan"),
                 "captured_episodes": 0,
                 "total_eval_episodes": 0,
             }
@@ -3494,6 +3503,7 @@ class RoleBasedRunner(object):
             ),
             "alive_rate": _mean_metric("alive_rate", 0.0),
             "max_escape_gap_angle": float(max_escape_gap_angle),
+            "capture_spread_reward": _mean_metric("capture_spread_reward", float("nan")),
             "captured_episodes": int(
                 np.sum([int(m.get("captured_episodes", 0)) for m in valid_metrics], dtype=np.int64)
             ),
@@ -3872,7 +3882,7 @@ class RoleBasedRunner(object):
         return True
 
     @torch.no_grad()
-    def _final_eval_saved_best_models(self, total_num_steps, episode, model_glob=None):
+    def _final_eval_saved_best_models(self, total_num_steps, episode, model_glob=None, save_gifs=False):
         """
         功能:
             训练完成后重载models下可用模型目录，并对可用评估桶执行最终串行评估与GIF保存。
@@ -3927,8 +3937,8 @@ class RoleBasedRunner(object):
                     episode=episode,
                     eval_envs=self.eval_envs_zone_false,
                     bucket="fixed_zone_false",
-                    save_gifs=True,
-                    save_pngs=bool(self.log_png),
+                    save_gifs=save_gifs,
+                    save_pngs=True,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
@@ -3937,8 +3947,8 @@ class RoleBasedRunner(object):
                     episode=episode,
                     eval_envs=self.eval_envs_zone_true,
                     bucket="fixed_zone_true",
-                    save_gifs=True,
-                    save_pngs=bool(self.log_png),
+                    save_gifs=save_gifs,
+                    save_pngs=True,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
@@ -3951,8 +3961,8 @@ class RoleBasedRunner(object):
                         episode=episode,
                         eval_envs=self.eval_envs_target_learn_zone_false,
                         bucket="target_learn_zone_false",
-                        save_gifs=True,
-                        save_pngs=bool(self.log_png),
+                        save_gifs=save_gifs,
+                        save_pngs=True,
                         record_logs=False,
                         gif_output_dir=res_dir,
                     )
@@ -3961,8 +3971,8 @@ class RoleBasedRunner(object):
                         episode=episode,
                         eval_envs=self.eval_envs_target_learn_zone_true,
                         bucket="target_learn_zone_true",
-                        save_gifs=True,
-                        save_pngs=bool(self.log_png),
+                        save_gifs=save_gifs,
+                        save_pngs=True,
                         record_logs=False,
                         gif_output_dir=res_dir,
                     )
@@ -3972,8 +3982,8 @@ class RoleBasedRunner(object):
                     episode=episode,
                     eval_envs=self.eval_envs,
                     bucket="fixed",
-                    save_gifs=True,
-                    save_pngs=bool(self.log_png),
+                    save_gifs=save_gifs,
+                    save_pngs=True,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
@@ -3983,8 +3993,8 @@ class RoleBasedRunner(object):
                         episode=episode,
                         eval_envs=self.eval_envs_target_learn,
                         bucket="target_learn",
-                        save_gifs=True,
-                        save_pngs=bool(self.log_png),
+                        save_gifs=save_gifs,
+                        save_pngs=True,
                         record_logs=False,
                         gif_output_dir=res_dir,
                     )
