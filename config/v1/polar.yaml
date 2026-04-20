@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Encircle+dis+colli
+  experiment_name: PolarLoc+Encircle+dis+colli+spread2
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -12,7 +12,8 @@ env:
   episode_length: 300 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true
-  obs_mode: legacy  # Choices: ["legacy", "rel_polar"]
+  obs_mode: rel_polar  # Choices: ["legacy", "rel_polar"]
+  action_frame: local
 
   neighbor_N: 3
   coord_summary_obs_enable: false
@@ -61,7 +62,7 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_enable: false
+  spread_reward_enable: true
   spread_reward_coef: 2.0
 
   # Capture reward

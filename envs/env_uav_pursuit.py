@@ -1215,13 +1215,19 @@ class TargetAgent(BaseAgent):
         )
         return quality_info
 
-    def compute_escape_gap_reward(self, hunters: List[HunterAgent], active_hunter_mask: np.ndarray):
+    def compute_escape_gap_reward(
+        self,
+        hunters: List[HunterAgent],
+        active_hunter_mask: np.ndarray,
+        include_target_reward: bool,
+    ):
         """
         功能:
             计算escape_gap拆分奖励（包围质量 + 拦截），并返回应分配奖励的围捕Hunter索引。
         输入:
             hunters (List[HunterAgent]): Hunter列表。
             active_hunter_mask (np.ndarray): Hunter激活掩码，shape=(num_hunters,)。
+            include_target_reward (bool): 是否计算Target侧escape_gap奖励。
         输出:
             tuple[float, float, float, float, List[int], dict]:
                 (Hunter包围奖励值, Target包围奖励值, Hunter拦截奖励值, Target拦截奖励值, 奖励接收Hunter索引, 诊断信息)。
@@ -1274,7 +1280,7 @@ class TargetAgent(BaseAgent):
                 * float(hunter_quality_score)
                 )
 
-        target_encircle_reward_value = - hunter_encircle_reward_value
+        target_encircle_reward_value = -hunter_encircle_reward_value if bool(include_target_reward) else 0.0
 
         # Step 2: 拦截奖励（仅依赖direction_score；Target速度过小时跳过）。
         speed = float(np.linalg.norm(np.asarray(self.velocity, dtype=np.float32)))
@@ -1295,10 +1301,11 @@ class TargetAgent(BaseAgent):
                 float(self.escape_gap_intercept_hunter_reward_scale)
                 * float(max(0.0, hunter_direction_score))
             )
-            target_intercept_reward_value = (
-                float(self.escape_gap_intercept_target_reward_scale)
-                * float(max(0.0, target_direction_score))
-            )
+            if bool(include_target_reward):
+                target_intercept_reward_value = (
+                    float(self.escape_gap_intercept_target_reward_scale)
+                    * float(max(0.0, target_direction_score))
+                )
 
         gap_info["encircle_score"] = float(encircle_score)
         gap_info["gap_open_score"] = float(gap_open_score)
@@ -2290,49 +2297,17 @@ class UAVPursuitEnv(object):
                 "reward_collision": float(reward_terms["collision_reward"][i]),
                 "reward_speed_penalty": float(reward_terms["speed_penalty_reward"][i]),
                 "reward_hunter_base": float(reward_terms["hunter_base_reward"][i]),
-                "reward_target_base": float(reward_terms["target_base_reward"][i]),
                 "reward_hunter_streak": float(reward_terms["hunter_streak_reward"][i]),
-                "reward_target_streak": float(reward_terms["target_streak_reward"][i]),
                 "reward_capture": float(reward_terms["capture_reward"][i]),
-                "reward_escape_gap": float(reward_terms["escape_gap_reward"][i]),
+                "reward_escape_gap_hunter": float(reward_terms["escape_gap_hunter_reward"][i]),
+                "reward_escape_gap_encircle_hunter": float(reward_terms["escape_gap_encircle_hunter_reward"][i]),
+                "reward_escape_gap_intercept_hunter": float(reward_terms["escape_gap_intercept_hunter_reward"][i]),
                 "reward_diversity": float(reward_terms["diversity_reward"][i]),
                 "reward_diversity_mi": float(reward_terms["diversity_mi_reward"][i]),
                 "reward_diversity_traj": float(reward_terms["diversity_traj_reward"][i]),
                 "reward_spread": float(reward_terms["spread_reward"][i]),
-                "reward_escape_gap_hunter": float(reward_terms["escape_gap_hunter_reward"][i]),
-                "reward_escape_gap_target": float(reward_terms["escape_gap_target_reward"][i]),
-                "reward_escape_gap_encircle": float(reward_terms["escape_gap_encircle_reward"][i]),
-                "reward_escape_gap_intercept": float(reward_terms["escape_gap_intercept_reward"][i]),
-                "reward_escape_gap_encircle_hunter": float(reward_terms["escape_gap_encircle_hunter_reward"][i]),
-                "reward_escape_gap_encircle_target": float(reward_terms["escape_gap_encircle_target_reward"][i]),
-                "reward_escape_gap_intercept_hunter": float(reward_terms["escape_gap_intercept_hunter_reward"][i]),
-                "reward_escape_gap_intercept_target": float(reward_terms["escape_gap_intercept_target_reward"][i]),
                 "max_escape_gap_angle": float(self.target.max_escape_gap_angle),
-                "max_escape_gap_center_angle": float(self.target.max_escape_gap_center_angle),
                 "max_escape_gap_metric_valid": bool(self.target.escape_gap_metric_valid),
-                "escape_gap_encircle_score": float(self.target.last_escape_gap_encircle_score),
-                "escape_gap_open_score": float(self.target.last_escape_gap_open_score),
-                "escape_gap_hunter_direction_score": float(self.target.last_escape_gap_hunter_direction_score),
-                "escape_gap_target_direction_score": float(self.target.last_escape_gap_target_direction_score),
-                "diversity_mi_score_mean": float(self.last_mi_diversity_score_mean),
-                "diversity_traj_score_mean": float(self.last_traj_diversity_score_mean),
-                "spread_score_mean": float(self.last_spread_score_mean),
-                "coord_self_is_topk": float(
-                    self.last_coord_summary_cache[i, 0]
-                    if (
-                        bool(self.coord_summary_obs_enable)
-                        and self.last_coord_summary_cache.shape[1] >= 1
-                    )
-                    else 0.0
-                ),
-                "coord_hunters_in_escape_radius_count": float(
-                    self.last_coord_summary_cache[i, 1]
-                    if (
-                        bool(self.coord_summary_obs_enable)
-                        and self.last_coord_summary_cache.shape[1] >= 2
-                    )
-                    else 0.0
-                ),
                 "active_agent": bool(
                     True if a.role != "hunter" else self.active_hunter_mask[int(i)]
                 ),
@@ -3466,7 +3441,8 @@ class UAVPursuitEnv(object):
                 - np.ndarray: 总奖励，shape=(agent_num,)。
                 - dict[str, np.ndarray]: 奖励子项字典。
         """
-        # Step 1: 计算基础奖励与捕获奖励（Hunter/Target共用一组系数）
+        # Step 1: 计算基础奖励与捕获奖励（Target仅在learn策略下需要奖励）。
+        include_target_reward = str(self.target.policy_type).lower() == "learn"
         hunter_base_reward = np.zeros(self.agent_num, dtype=np.float32)
         target_base_reward = np.zeros(self.agent_num, dtype=np.float32)
         hunter_streak_reward = np.zeros(self.agent_num, dtype=np.float32)
@@ -3523,17 +3499,18 @@ class UAVPursuitEnv(object):
                 streak_used.append(streak_i)
                 hunter_streak_reward[hid] = self.base_streak_scale * float(streak_i)
 
-            # Step 1.2: Target base reward取Hunter改变量的反向均值（归一化后）。
-            mean_delta_norm = float(np.mean(delta_norm_values)) if len(delta_norm_values) > 0 else 0.0
-            target_base_reward[self.target_index] = -float(self.base_delta_target_scale) * mean_delta_norm
-            min_d_for_scale = min(hunter_d) if len(hunter_d) > 0 else float("inf")
-            if (
-                float(getattr(self.target, "escape_dis", 0.0)) > 0.0
-                and min_d_for_scale <= float(self.target.escape_dis)
-            ):
-                target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
-            avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
-            target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
+            if bool(include_target_reward):
+                # Step 1.2: Target base reward取Hunter改变量的反向均值（归一化后）。
+                mean_delta_norm = float(np.mean(delta_norm_values)) if len(delta_norm_values) > 0 else 0.0
+                target_base_reward[self.target_index] = -float(self.base_delta_target_scale) * mean_delta_norm
+                min_d_for_scale = min(hunter_d) if len(hunter_d) > 0 else float("inf")
+                if (
+                    float(getattr(self.target, "escape_dis", 0.0)) > 0.0
+                    and min_d_for_scale <= float(self.target.escape_dis)
+                ):
+                    target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
+                avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
+                target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
         else:
             # Step 1.1: 旧版base reward（距离分段 + streak）
             active_dist_pairs = []
@@ -3573,24 +3550,29 @@ class UAVPursuitEnv(object):
                 streak_used.append(streak_i)
                 hunter_streak_reward[i] = self.base_streak_scale * float(streak_i)
 
-            min_d = min(hunter_d) if hunter_d else (2.0 * self.world_size)
-            if min_d <= capture_dis_safe:
-                near_ratio_t = 1.0 - min_d / capture_dis_safe
-                target_base_reward[self.target_index] = -self.base_near_scale * near_ratio_t
-            else:
-                far_ratio_t = (min_d - capture_dis_safe) / dist_scale
-                target_base_reward[self.target_index] = self.base_far_scale * far_ratio_t
-            if (
-                float(getattr(self.target, "escape_dis", 0.0)) > 0.0
-                and min_d <= float(self.target.escape_dis)
-            ):
-                target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
+            if bool(include_target_reward):
+                min_d = min(hunter_d) if hunter_d else (2.0 * self.world_size)
+                if min_d <= capture_dis_safe:
+                    near_ratio_t = 1.0 - min_d / capture_dis_safe
+                    target_base_reward[self.target_index] = -self.base_near_scale * near_ratio_t
+                else:
+                    far_ratio_t = (min_d - capture_dis_safe) / dist_scale
+                    target_base_reward[self.target_index] = self.base_far_scale * far_ratio_t
+                if (
+                    float(getattr(self.target, "escape_dis", 0.0)) > 0.0
+                    and min_d <= float(self.target.escape_dis)
+                ):
+                    target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
 
-            avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
-            target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
+                avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
+                target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
 
-        if captured:
+        if captured and bool(include_target_reward):
             self._assign_capture_reward(capture_reward)
+        elif captured:
+            hunter_capture_reward = np.zeros(self.agent_num, dtype=np.float32)
+            self._assign_capture_reward(hunter_capture_reward)
+            capture_reward[: self.num_hunters] = hunter_capture_reward[: self.num_hunters]
 
         # Step 2: escape_gap拆分奖励（包围质量reward + 拦截reward）
         (
@@ -3603,6 +3585,7 @@ class UAVPursuitEnv(object):
         ) = self.target.compute_escape_gap_reward(
             hunters=self.hunters,
             active_hunter_mask=self.active_hunter_mask,
+            include_target_reward=bool(include_target_reward),
         )
 
         if len(gap_hunter_ids) > 0:
@@ -3613,7 +3596,7 @@ class UAVPursuitEnv(object):
                     continue
                 escape_gap_encircle_hunter_reward[int(hid)] = float(gap_hunter_encircle_reward_value)
                 escape_gap_intercept_hunter_reward[int(hid)] = float(gap_hunter_intercept_reward_value)
-        if bool(self.target.alive) and (not bool(captured)):
+        if bool(include_target_reward) and bool(self.target.alive) and (not bool(captured)):
             escape_gap_encircle_target_reward[self.target_index] = float(gap_target_encircle_reward_value)
             escape_gap_intercept_target_reward[self.target_index] = float(gap_target_intercept_reward_value)
 
@@ -3686,6 +3669,8 @@ class UAVPursuitEnv(object):
             + collision_rewards
             + speed_penalty_reward
         ).astype(np.float32)
+        if not bool(include_target_reward):
+            total[self.target_index] = 0.0
         reward_terms = {
             "total": total,
             "hunter_base_reward": hunter_base_reward.astype(np.float32),
