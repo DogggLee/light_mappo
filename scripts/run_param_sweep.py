@@ -32,20 +32,38 @@ plot:
 
 import argparse
 import csv
+import hashlib
 import itertools
 import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import yaml
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
 ALIASES = {
     "reward.mi_deversity_enable": "reward.mi_diversity_enable",
     "reward.speed_panalty": "reward.speed_penalty",
+}
+
+NAME_ALIASES = {
+    "env.action_frame": "action_frame",
+    "reward.base_reward_mode": "base_reward_mode",
+    "reward.mi_diversity_enable": "mi_diversity",
+    "reward.speed_penalty": "speed_penalty",
+    "reward.spread_reward_enable": "spread_reward",
+    "optim.lr": "lr",
+    "schedule.use_linear_lr_decay": "linear_lr_decay",
+    "domain_randomization.train_split.enable": "domain_rand",
 }
 
 
@@ -203,10 +221,15 @@ def _build_experiment_name(combo):
     """
     parts = []
     for path, value in combo:
-        safe_path = str(path).replace("/", "_").replace("\\", "_")
+        safe_path = NAME_ALIASES.get(str(path), str(path).split(".")[-1])
+        safe_path = str(safe_path).replace("/", "_").replace("\\", "_")
         parts.append("{}-{}".format(safe_path, _value_to_name(value)))
     name = " + ".join(parts)
-    return re.sub(r"[^0-9A-Za-z_.+= -]+", "_", name)
+    name = re.sub(r"[^0-9A-Za-z_.+= -]+", "_", name)
+    if len(name) <= 180:
+        return name
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+    return "{} + h-{}".format(name[:165].rstrip(" +"), digest)
 
 
 def _build_combinations(parameters):
@@ -243,7 +266,7 @@ def _prepare_experiments(sweep_cfg, sweep_path):
     输出:
         tuple[Path, list[dict]]: sweep输出目录和实验manifest。
     """
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     base_config_path = Path(str(sweep_cfg["base_config"]))
     if not base_config_path.is_absolute():
         base_config_path = root / base_config_path
@@ -302,7 +325,7 @@ def _resolve_output_dir(sweep_cfg):
     输出:
         Path: 绝对输出目录。
     """
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     output_dir = Path(str(sweep_cfg.get("output_dir", "results/sweeps/default")))
     if not output_dir.is_absolute():
         output_dir = root / output_dir
@@ -320,7 +343,7 @@ def _expected_run_root(config_path):
     """
     from utils.util import load_config
 
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     cfg = load_config(str(config_path))
     return root / "results" / str(cfg.env.env_name) / str(cfg.exp.algorithm_name) / str(cfg.exp.experiment_name)
 
@@ -362,7 +385,7 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
     输出:
         list[dict]: 更新状态后的manifest。
     """
-    root = Path(__file__).resolve().parents[1]
+    root = PROJECT_ROOT
     max_parallel = int(sweep_cfg.get("max_parallel", 1))
     py_bin = str(sweep_cfg.get("python", "python"))
     train_script = str(sweep_cfg.get("train_script", "train/train.py"))

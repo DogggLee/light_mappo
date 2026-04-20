@@ -9,7 +9,7 @@ parameters:
   env.action_frame:
     values: [local]
   reward.base_reward_mode:
-    values: [legacy, delta_window]
+    values: [delta_window]
   reward.mi_diversity_enable:
     values: [false, true]
   reward.speed_penalty:
