@@ -111,6 +111,20 @@ class BaseAgent(object):
 
         # print(f"{role} Agent {agent_id}: Policy type: {policy_type}")
 
+    @staticmethod
+    def _sample_unit_heading(rng: Optional[np.random.RandomState] = None) -> np.ndarray:
+        """
+        功能:
+            采样单位朝向向量。
+        输入:
+            rng (Optional[np.random.RandomState]): 可选随机数发生器。
+        输出:
+            np.ndarray: shape=(2,) 的单位向量。
+        """
+        r = np.random if rng is None else rng
+        theta = float(r.uniform(0.0, 2.0 * np.pi))
+        return np.array([np.cos(theta), np.sin(theta)], dtype=np.float32)
+
     def reset(self, init_pos: np.ndarray):
         """
         输入:
@@ -203,7 +217,7 @@ class BaseAgent(object):
         self.position = self.position + self.velocity * float(dt)
         self.position = np.clip(self.position, -float(world_size), float(world_size))
         speed = float(np.linalg.norm(self.velocity))
-        if speed > 1e-8:
+        if speed > 1e-6:
             self.heading = (self.velocity / speed).astype(np.float32)
         self.trajectory.append(self.position.copy())
 
@@ -1340,20 +1354,32 @@ class UAVPursuitEnv(object):
 
         self.target_index = self.num_hunters
         self.agent_num = self.num_hunters + 1
+        self.obs_mode = str(env_cfg.obs_mode).lower()
+        if self.obs_mode not in ("legacy", "rel_polar"):
+            raise ValueError(
+                "Unsupported env.obs_mode: {} (choices: legacy, rel_polar)".format(
+                    str(self.obs_mode)
+                )
+            )
         self.neighbor_N = int(env_cfg.neighbor_N)
         self.neighbor_N = max(0, self.neighbor_N)
         self.coord_summary_obs_enable = bool(env_cfg.coord_summary_obs_enable)
         self.coord_topk_hunters = int(max(1, int(env_cfg.coord_topk_hunters)))
         self.neighbor_feat_dim = 6  # [dx,dy,dvx,dvy,d,valid]
         self.target_feat_dim = 6    # [dx,dy,dvx,dvy,d,visible]
-        self.coord_summary_feat_dim = 2 if bool(self.coord_summary_obs_enable) else 0
-        self.obs_dim = (
-            4
-            + self.neighbor_N * self.neighbor_feat_dim
-            + self.target_feat_dim
-            + 5
-            + self.coord_summary_feat_dim
-        )
+        if self.obs_mode == "legacy":
+            self.coord_summary_feat_dim = 2 if bool(self.coord_summary_obs_enable) else 0
+            self.obs_dim = (
+                4
+                + self.neighbor_N * self.neighbor_feat_dim
+                + self.target_feat_dim
+                + 5
+                + self.coord_summary_feat_dim
+            )
+        else:
+            # rel_polar: own(4) + target_polar(2) + topK_hunter_polar(K*3=[d,dir,valid]).
+            self.coord_summary_feat_dim = 0
+            self.obs_dim = 4 + 2 + self.neighbor_N * 3
         self.action_dim = 2
 
         self.capture_dis = float(env_cfg.capture_dis)
@@ -1514,6 +1540,7 @@ class UAVPursuitEnv(object):
         # 步骤3：初始化运行时状态缓存
         self.rng = np.random.RandomState()
         self.position_rng = np.random.RandomState()
+        self.heading_rng = np.random.RandomState()
         self.base_seed = 0
         self.step_count = 0
         self.episode_count = 0
@@ -1651,6 +1678,7 @@ class UAVPursuitEnv(object):
         self.base_seed = int(seed)
         self.rng.seed(self.base_seed)
         self.position_rng.seed(self.base_seed)
+        self.heading_rng.seed(self.base_seed + 1000003)
 
     def set_regen_scope(self, scope: str):
         """
@@ -1686,6 +1714,7 @@ class UAVPursuitEnv(object):
             recover_seed = self.base_seed if self.task_seed is None else int(self.task_seed)
             self.rng.seed(int(recover_seed))
             self.position_rng.seed(int(recover_seed))
+            self.heading_rng.seed(int(recover_seed) + 1000003)
             self._reset_target_route_state_for_recover()
             return self._reset_with_sampled_positions()
 
@@ -1713,32 +1742,37 @@ class UAVPursuitEnv(object):
     def _reset_with_sampled_positions(self):
         """
         功能:
-            使用当前位置随机流采样初始位置并执行reset主逻辑。
+            使用随机流采样初始位置与初始朝向并执行reset主逻辑。
             若Target初始capture_dis范围内存在active Hunter，则最多重采样10次。
         输入:
             无。
         输出:
             List[np.ndarray]: shape=(agent_num, obs_dim)。
         """
-        # Step 1: 采样初始位置，并做“Target捕获圈内无Hunter”约束重试
+        # Step 1: 采样初始位置与朝向，并做“Target捕获圈内无Hunter”约束重试
         max_retry = 10
         init_positions = None
+        init_headings = None
         for _ in range(max_retry):
             sampled = self._sample_initial_positions()
+            sampled_headings = self._sample_initial_headings()
             if self._is_valid_initial_positions(sampled):
                 init_positions = sampled
+                init_headings = sampled_headings
                 break
             init_positions = sampled
+            init_headings = sampled_headings
 
         # Step 2: 使用最终采样结果执行reset
-        return self._reset_to_positions(init_positions)
+        return self._reset_to_positions(init_positions, init_headings)
 
-    def _reset_to_positions(self, init_positions: np.ndarray):
+    def _reset_to_positions(self, init_positions: np.ndarray, init_headings: np.ndarray):
         """
         功能:
             将环境重置到指定初始位置，并按照active_hunter_mask启停Hunter。
         输入:
             init_positions (np.ndarray): shape=(agent_num,2)，各agent初始位置。
+            init_headings (np.ndarray): shape=(agent_num,2)，各agent初始朝向（单位向量）。
         输出:
             List[np.ndarray]: shape=(agent_num, obs_dim)。
         """
@@ -1770,22 +1804,50 @@ class UAVPursuitEnv(object):
             raise ValueError(
                 f"init_positions shape mismatch: expected {(self.agent_num, 2)}, got {init_positions.shape}"
             )
+        if init_headings is None or init_headings.shape != (self.agent_num, 2):
+            raise ValueError(
+                f"init_headings shape mismatch: expected {(self.agent_num, 2)}, got {None if init_headings is None else init_headings.shape}"
+            )
 
         for hid, hunter in enumerate(self.hunters):
             hunter.reset(np.asarray(init_positions[hid], dtype=np.float32))
+            hunter.heading = np.asarray(init_headings[hid], dtype=np.float32).copy()
             self.hunter_behavior_histories[hid].clear()
             if not bool(self.active_hunter_mask[hid]):
                 hunter.alive = False
                 hunter.position[:] = 0.0
                 hunter.velocity[:] = 0.0
-                hunter.heading = np.array([1.0, 0.0], dtype=np.float32)
+                hunter.heading = np.asarray(init_headings[hid], dtype=np.float32).copy()
                 hunter.trajectory = [hunter.position.copy()]
                 self.capture_counter[hid] = 0
 
         self.target.reset(np.asarray(init_positions[self.target_index], dtype=np.float32))
+        self.target.heading = np.asarray(init_headings[self.target_index], dtype=np.float32).copy()
 
         # 步骤3：返回初始观测
         return self._build_obs(team_sees_target=False)
+
+    def _sample_initial_headings(self) -> np.ndarray:
+        """
+        功能:
+            采样所有agent初始朝向（单位向量）。
+            - hunters_in_zone=False: 各agent独立随机朝向。
+            - hunters_in_zone=True: 所有agent共享同一随机朝向。
+        输入:
+            无。
+        输出:
+            np.ndarray: shape=(agent_num,2)。
+        """
+        headings = np.zeros((self.agent_num, 2), dtype=np.float32)
+        if bool(self.hunters_in_zone):
+            shared = BaseAgent._sample_unit_heading(rng=self.heading_rng)
+            for aid in range(self.agent_num):
+                headings[aid] = shared
+            return headings
+
+        for aid in range(self.agent_num):
+            headings[aid] = BaseAgent._sample_unit_heading(rng=self.heading_rng)
+        return headings
 
     def _apply_task_spec(self, task_spec: dict, reset_position_rng: bool = True):
         """
@@ -1846,6 +1908,7 @@ class UAVPursuitEnv(object):
             self.task_seed = int(seed_val)
             if reset_position_rng:
                 self.position_rng.seed(self.task_seed)
+                self.heading_rng.seed(int(self.task_seed) + 1000003)
 
     def _reset_target_route_state_for_recover(self):
         """
@@ -2321,10 +2384,10 @@ class UAVPursuitEnv(object):
                     alpha=0.75,
                 )
 
-        # Step 5: 绘制轨迹渐隐、当前位置、速度向量、感知半径和碰撞半径
+        # Step 5: 绘制轨迹渐隐、当前位置、朝向向量、速度文本、感知半径和碰撞半径
         hunter_colors = ["#1f77b4", "#2ca02c", "#ff7f0e", "#17becf", "#8c564b"]
         hunter_idx = 0
-        velocity_arrow_len = max(1e-6, float(self.world_size) * 0.08)
+        heading_arrow_len = max(1e-6, float(self.world_size) * 0.08)
         for agent_idx, agent in enumerate(self.agents):
             if agent.role == "hunter" and not bool(self.active_hunter_mask[agent_idx]):
                 continue
@@ -2418,7 +2481,7 @@ class UAVPursuitEnv(object):
                 heading = np.array([1.0, 0.0], dtype=np.float32)
             else:
                 heading = heading / h_norm
-            vec = heading * velocity_arrow_len
+            vec = heading * heading_arrow_len
             ax.arrow(
                 float(pos[0]),
                 float(pos[1]),
@@ -2434,7 +2497,7 @@ class UAVPursuitEnv(object):
             ax.text(
                 float(pos[0] + vec[0]),
                 float(pos[1] + vec[1]),
-                f"{v_norm:.1f}",
+                f"v={v_norm:.1f}",
                 fontsize=7,
                 color=color,
                 alpha=0.9 if alive else 0.5,
@@ -2450,7 +2513,7 @@ class UAVPursuitEnv(object):
                 left_theta = theta + float(agent.max_turn_angle_rad)
                 right_theta = theta - float(agent.max_turn_angle_rad)
                 for th in (left_theta, right_theta):
-                    turn_vec = np.array([np.cos(th), np.sin(th)], dtype=np.float32) * velocity_arrow_len
+                    turn_vec = np.array([np.cos(th), np.sin(th)], dtype=np.float32) * heading_arrow_len
                     ax.plot(
                         [float(pos[0]), float(pos[0] + turn_vec[0])],
                         [float(pos[1]), float(pos[1] + turn_vec[1])],
@@ -2612,7 +2675,7 @@ class UAVPursuitEnv(object):
                 Line2D([0], [0], color="#7f7f7f", lw=1.0, linestyle="-.", label="Safe Distance"),
                 Line2D([0], [0], color="#bcbd22", lw=1.1, linestyle="-.", label="Target Capture Range"),
                 Line2D([0], [0], color="black", lw=1.0, linestyle="--", label="Collision Radius"),
-                Line2D([0], [0], color="#1f77b4", lw=1.8, marker=">", markersize=6, label="Velocity Vector"),
+                Line2D([0], [0], color="#1f77b4", lw=1.8, marker=">", markersize=6, label="Heading Vector"),
                 Line2D([0], [0], color="#1f77b4", lw=1.0, linestyle="--", label="Turn Limit"),
                 Line2D([0], [0], color="#9467bd", lw=1.4, linestyle="-", label="Patrol Route"),
                 Line2D([0], [0], color="#ff9896", lw=1.0, linestyle="-", label="Escape Radius"),
@@ -3608,6 +3671,9 @@ class UAVPursuitEnv(object):
         输出:
             List[np.ndarray]: shape=(agent_num, obs_dim)。
         """
+        if self.obs_mode == "rel_polar":
+            return self._build_obs_rel_polar()
+
         scale = max(self.world_size, 1e-6)
         obs = []
         for i, ai in enumerate(self.agents):
@@ -3623,6 +3689,85 @@ class UAVPursuitEnv(object):
                 self.last_coord_summary_cache[int(i)] = coord_summary_obs.astype(np.float32)
             parts = [own, neighbor_obs, target_obs, memory_obs, coord_summary_obs]
             obs.append(np.concatenate(parts, axis=0).astype(np.float32))
+        return obs
+
+    def _relative_polar_feature(self, observer: BaseAgent, target_pos: np.ndarray, scale: float):
+        """
+        功能:
+            计算目标点在观察者局部坐标系下的极坐标特征（距离+方向）。
+        输入:
+            observer (BaseAgent): 观察者agent。
+            target_pos (np.ndarray): 被观测位置，shape=(2,)。
+            scale (float): 距离归一化尺度。
+        输出:
+            tuple[float, float]: (distance_norm, direction_norm)。
+        """
+        rel = np.asarray(target_pos, dtype=np.float32) - np.asarray(observer.position, dtype=np.float32)
+        dist_norm = float(np.linalg.norm(rel)) / float(max(scale, 1e-6))
+
+        # 通过点积+二维叉积直接计算“heading -> relative”的有向夹角。
+        vec_b = np.asarray(observer.heading, dtype=np.float32).reshape(2)  # 朝向向量（单位向量）
+        vec_a = rel  # 相对位置向量
+        dot = float(np.dot(vec_b, vec_a))
+        cross = float(vec_b[0] * vec_a[1] - vec_b[1] * vec_a[0])
+        rel_angle = float(np.arctan2(cross, dot))
+        direction_norm = float(np.clip(rel_angle / np.pi, -1.0, 1.0))
+        return float(dist_norm), float(direction_norm)
+
+    def _build_obs_rel_polar(self):
+        """
+        功能:
+            按rel_polar模式组装观测：own(4)+target极坐标(2)+topK hunter极坐标槽(K*3)。
+        输入:
+            无。
+        输出:
+            List[np.ndarray]: shape=(agent_num, obs_dim)。
+        """
+        scale = max(self.world_size, 1e-6)
+        obs = []
+        self.last_coord_summary_cache.fill(0.0)
+        for i, ai in enumerate(self.agents):
+            if i < self.num_hunters and not bool(self.active_hunter_mask[i]):
+                obs.append(np.zeros(self.obs_dim, dtype=np.float32))
+                continue
+
+            own = np.concatenate([ai.position / scale, ai.velocity / scale]).astype(np.float32)
+
+            # target总是可观测：在当前agent局部坐标系下的相对距离与方向
+            target_d, target_dir = self._relative_polar_feature(
+                observer=ai,
+                target_pos=np.asarray(self.target.position, dtype=np.float32),
+                scale=scale,
+            )
+            target_obs = np.array([target_d, target_dir], dtype=np.float32)
+
+            # topK hunter相对极坐标: [dist, dir, valid]
+            hunter_candidates = []
+            for hid in range(self.num_hunters):
+                if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
+                    continue
+                if i < self.num_hunters and int(hid) == int(i):
+                    continue
+                hunter = self.hunters[hid]
+                dist = float(np.linalg.norm(np.asarray(hunter.position) - np.asarray(ai.position)))
+                hunter_candidates.append((dist, int(hid)))
+            hunter_candidates.sort(key=lambda x: x[0])
+            selected = hunter_candidates[: self.neighbor_N]
+
+            slots = []
+            for _, hid in selected:
+                hunter = self.hunters[int(hid)]
+                rel_d, rel_dir = self._relative_polar_feature(
+                    observer=ai,
+                    target_pos=np.asarray(hunter.position, dtype=np.float32),
+                    scale=scale,
+                )
+                slots.append(np.array([rel_d, rel_dir, 1.0], dtype=np.float32))
+            while len(slots) < self.neighbor_N:
+                slots.append(np.zeros(3, dtype=np.float32))
+            hunter_obs = np.concatenate(slots, axis=0).astype(np.float32) if len(slots) > 0 else np.zeros(0, dtype=np.float32)
+
+            obs.append(np.concatenate([own, target_obs, hunter_obs], axis=0).astype(np.float32))
         return obs
 
     def _neighbor_obs(self, obs_idx, scale):

@@ -144,6 +144,7 @@ class RoleBasedRunner(object):
             "capture_steps": np.inf,
             "capture_steps_objective": np.inf,
             "max_escape_gap_angle": np.inf,
+            "capture_spread_reward": -np.inf,
         }
         self.best_eval_metrics_by_bucket = {
             "target_learn": {
@@ -2061,6 +2062,7 @@ class RoleBasedRunner(object):
                 capture_steps_objective=capture_steps_objective,
                 alive_rate=float(eval_metrics["alive_rate"]),
                 max_escape_gap_angle=float(max_escape_gap_angle),
+                capture_spread_reward=float(capture_spread_reward),
                 captured_episodes=captured_episodes,
                 total_eval_episodes=total_eval_episodes,
             )
@@ -2075,6 +2077,7 @@ class RoleBasedRunner(object):
                     capture_steps_objective=float(grouped_metrics.get("capture_steps_objective", grouped_metrics["capture_steps"])),
                     alive_rate=float(grouped_metrics["alive_rate"]),
                     max_escape_gap_angle=float(grouped_metrics["max_escape_gap_angle"]),
+                    capture_spread_reward=float(grouped_metrics.get("capture_spread_reward", float("nan"))),
                     captured_episodes=int(grouped_metrics["captured_episodes"]),
                     total_eval_episodes=int(grouped_metrics["total_eval_episodes"]),
                 )
@@ -2906,6 +2909,7 @@ class RoleBasedRunner(object):
                     "capture_steps_objective",
                     "alive_rate",
                     "max_escape_gap_angle",
+                    "capture_spread_reward",
                     "captured_episodes",
                     "total_eval_episodes",
                 ]
@@ -2960,6 +2964,7 @@ class RoleBasedRunner(object):
         capture_steps_objective,
         alive_rate,
         max_escape_gap_angle,
+        capture_spread_reward,
         captured_episodes,
         total_eval_episodes,
     ):
@@ -2975,6 +2980,7 @@ class RoleBasedRunner(object):
             capture_steps_objective (float): 平均捕获代价步长（失败episode按eval_episode_length计）。
             alive_rate (float): 终止时hunter平均存活率（按激活hunter归一化）。
             max_escape_gap_angle (float): 最大潜在可逃脱空间夹角均值（弧度）。
+            capture_spread_reward (float): 捕获成功时spread reward均值（无捕获可为NaN）。
             captured_episodes (int): 捕获成功episode数。
             total_eval_episodes (int): 评估episode总数。
         输出:
@@ -2994,6 +3000,7 @@ class RoleBasedRunner(object):
                     float(capture_steps_objective),
                     float(alive_rate),
                     float(max_escape_gap_angle),
+                    float(capture_spread_reward),
                     int(captured_episodes),
                     int(total_eval_episodes),
                 ]
@@ -3716,6 +3723,11 @@ class RoleBasedRunner(object):
             self._save_best_snapshot("max_escape_gap_angle", episode, eval_metrics)
             updated_metrics.append("max_escape_gap_angle")
 
+        # Step 5: capture_spread_reward仅维护历史最优值，用于记录，不作为保存快照触发条件。
+        cur_spread = float(eval_metrics.get("capture_spread_reward", float("nan")))
+        if np.isfinite(cur_spread) and cur_spread > float(self.best_eval_metrics.get("capture_spread_reward", -np.inf)):
+            self.best_eval_metrics["capture_spread_reward"] = float(cur_spread)
+
         self._print_metric_table(
             "EvalSummary[fixed]",
             {
@@ -3795,6 +3807,7 @@ class RoleBasedRunner(object):
             f.write(f"capture_steps={float(eval_metrics['capture_steps']):.6f}\n")
             f.write(f"capture_steps_objective={float(eval_metrics.get('capture_steps_objective', eval_metrics['capture_steps'])):.6f}\n")
             f.write(f"max_escape_gap_angle={float(eval_metrics.get('max_escape_gap_angle', float('nan'))):.6f}\n")
+            f.write(f"capture_spread_reward={float(eval_metrics.get('capture_spread_reward', float('nan'))):.6f}\n")
             f.write(f"captured_episodes={int(eval_metrics.get('captured_episodes', 0))}\n")
             f.write(f"total_eval_episodes={int(eval_metrics.get('total_eval_episodes', 0))}\n")
             f.write(f"best_reward={float(self.best_eval_metrics['reward']):.6f}\n")
@@ -3802,6 +3815,7 @@ class RoleBasedRunner(object):
             f.write(f"best_capture_steps={float(self.best_eval_metrics['capture_steps']):.6f}\n")
             f.write(f"best_capture_steps_objective={float(self.best_eval_metrics.get('capture_steps_objective', self.best_eval_metrics['capture_steps'])):.6f}\n")
             f.write(f"best_max_escape_gap_angle={float(self.best_eval_metrics.get('max_escape_gap_angle', float('nan'))):.6f}\n")
+            f.write(f"best_capture_spread_reward={float(self.best_eval_metrics.get('capture_spread_reward', float('nan'))):.6f}\n")
         print(
             "[Best] metric={} updated at episode {} | reward={:.4f} | capture_rate={:.4f} | capture_steps={:.2f} | max_escape_gap={:.4f} | path={}".format(
                 str(metric_name),
