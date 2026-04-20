@@ -1361,6 +1361,13 @@ class UAVPursuitEnv(object):
                     str(self.obs_mode)
                 )
             )
+        self.action_frame = str(env_cfg.action_frame).lower()
+        if self.action_frame not in ("global", "local"):
+            raise ValueError(
+                "Unsupported env.action_frame: {} (choices: global, local)".format(
+                    str(self.action_frame)
+                )
+            )
         self.neighbor_N = int(env_cfg.neighbor_N)
         self.neighbor_N = max(0, self.neighbor_N)
         self.coord_summary_obs_enable = bool(env_cfg.coord_summary_obs_enable)
@@ -2190,10 +2197,37 @@ class UAVPursuitEnv(object):
             else:
                 selected_actions.append(agent.select_action(self.step_count, policy_action, self.rng))
 
-        # 步骤2：执行运动学更新
+        frame_actions = []
+        exec_actions = []
         for agent, action in zip(self.agents, selected_actions):
+            action_vec = np.asarray(action, dtype=np.float32).reshape(2)
+            
+            # 解析动作
+            if self.action_frame == "global":
+                frame_action = np.clip(action_vec, -1.0, 1.0).astype(np.float32)
+            else:
+                # local模式下learn动作直接视为机体系动作；启发式动作先全局->局部，保证历史行为与旧逻辑一致。
+                if str(agent.policy_type).lower() == "learn":
+                    frame_action = np.clip(action_vec, -1.0, 1.0).astype(np.float32)
+                else:  
+                    # 对于Target的非learn模式动作，
+                    frame_action = self._global_action_to_local(action_vec, agent.heading)
+            
+            # 要执行的动作统一在全局坐标系下
+            exec_action = (
+                frame_action
+                if self.action_frame == "global"
+                else self._local_action_to_global(frame_action, agent.heading)
+            )
+            frame_actions.append(frame_action.astype(np.float32))
+            exec_actions.append(exec_action.astype(np.float32))
+
+        # 步骤2：执行运动学更新（运动学更新时统一使用全局动作）
+        for agent, action in zip(self.agents, exec_actions):
             agent.step(action, self.dt, self.world_size)
-        self._update_hunter_diversity_histories(selected_actions=selected_actions)
+
+        # Local模式下保存局部动作，Global模式下保存全局动作
+        self._update_hunter_diversity_histories(selected_actions=frame_actions)
 
         # 步骤3：碰撞、可见性、记忆更新、捕获判定
         target_collided, collision_rewards = self._handle_collision()
@@ -2306,6 +2340,53 @@ class UAVPursuitEnv(object):
             for i, a in enumerate(self.agents)
         ]
         return [obs, rews, dones, infos]
+
+    def _normalized_heading(self, heading: np.ndarray) -> np.ndarray:
+        """
+        功能:
+            对输入朝向向量做单位化，返回稳定可用的heading。
+        输入:
+            heading (np.ndarray): shape=(2,) 朝向向量。
+        输出:
+            np.ndarray: shape=(2,) 单位朝向向量。
+        """
+        h = np.asarray(heading, dtype=np.float32).reshape(2)
+        norm = float(np.linalg.norm(h))
+        if norm <= 1e-8:
+            return np.array([1.0, 0.0], dtype=np.float32)
+        return (h / norm).astype(np.float32)
+
+    def _local_action_to_global(self, action_local: np.ndarray, heading: np.ndarray) -> np.ndarray:
+        """
+        功能:
+            将机体系动作转换为全局坐标动作（机头前向为+y，正右侧为+x）。
+        输入:
+            action_local (np.ndarray): shape=(2,) [right_x, forward_y] 机体系动作。
+            heading (np.ndarray): shape=(2,) 全局单位朝向向量。
+        输出:
+            np.ndarray: shape=(2,) 全局坐标动作。
+        """
+        local = np.asarray(action_local, dtype=np.float32).reshape(2)
+        fwd = self._normalized_heading(heading)
+        right = np.array([fwd[1], -fwd[0]], dtype=np.float32)
+        out = local[0] * right + local[1] * fwd
+        return out.astype(np.float32)
+
+    def _global_action_to_local(self, action_global: np.ndarray, heading: np.ndarray) -> np.ndarray:
+        """
+        功能:
+            将全局坐标动作转换为机体系动作。
+        输入:
+            action_global (np.ndarray): shape=(2,) 全局动作。
+            heading (np.ndarray): shape=(2,) 全局单位朝向向量。
+        输出:
+            np.ndarray: shape=(2,) 机体系动作 [right_x, forward_y]。
+        """
+        g = np.asarray(action_global, dtype=np.float32).reshape(2)
+        fwd = self._normalized_heading(heading)
+        right = np.array([fwd[1], -fwd[0]], dtype=np.float32)
+        out = np.array([float(np.dot(g, right)), float(np.dot(g, fwd))], dtype=np.float32)
+        return out.astype(np.float32)
 
     def render(self, mode="rgb_array", title=None):
         """
@@ -3705,7 +3786,7 @@ class UAVPursuitEnv(object):
         rel = np.asarray(target_pos, dtype=np.float32) - np.asarray(observer.position, dtype=np.float32)
         dist_norm = float(np.linalg.norm(rel)) / float(max(scale, 1e-6))
 
-        # 通过点积+二维叉积直接计算“heading -> relative”的有向夹角。
+        # 通过点积+二维叉积直接计算“heading -> relative”的有向夹角。逆时针为正
         vec_b = np.asarray(observer.heading, dtype=np.float32).reshape(2)  # 朝向向量（单位向量）
         vec_a = rel  # 相对位置向量
         dot = float(np.dot(vec_b, vec_a))
@@ -3750,19 +3831,33 @@ class UAVPursuitEnv(object):
                     continue
                 hunter = self.hunters[hid]
                 dist = float(np.linalg.norm(np.asarray(hunter.position) - np.asarray(ai.position)))
-                hunter_candidates.append((dist, int(hid)))
-            hunter_candidates.sort(key=lambda x: x[0])
-            selected = hunter_candidates[: self.neighbor_N]
-
-            slots = []
-            for _, hid in selected:
-                hunter = self.hunters[int(hid)]
                 rel_d, rel_dir = self._relative_polar_feature(
                     observer=ai,
                     target_pos=np.asarray(hunter.position, dtype=np.float32),
                     scale=scale,
                 )
-                slots.append(np.array([rel_d, rel_dir, 1.0], dtype=np.float32))
+                hunter_candidates.append(
+                    {
+                        "hid": int(hid),
+                        "dist": float(dist),
+                        "rel_d": float(rel_d),
+                        "rel_dir": float(rel_dir),
+                    }
+                )
+            # Step 1: 先按距离选取topK邻居（tie-break按hid保证稳定）。
+            hunter_candidates.sort(key=lambda x: (float(x["dist"]), int(x["hid"])))
+            selected = hunter_candidates[: self.neighbor_N]
+            # Step 2: 对topK按相对角度升序排列，保证同分布下槽位顺序稳定。
+            selected.sort(key=lambda x: (float(x["rel_dir"]), float(x["dist"]), int(x["hid"])))
+
+            slots = []
+            for item in selected:
+                slots.append(
+                    np.array(
+                        [float(item["rel_d"]), float(item["rel_dir"]), 1.0],
+                        dtype=np.float32,
+                    )
+                )
             while len(slots) < self.neighbor_N:
                 slots.append(np.zeros(3, dtype=np.float32))
             hunter_obs = np.concatenate(slots, axis=0).astype(np.float32) if len(slots) > 0 else np.zeros(0, dtype=np.float32)
