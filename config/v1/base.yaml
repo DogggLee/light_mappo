@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Encircle+dis+colli
+  experiment_name: loc_Encircle+dis2+colli5
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -13,6 +13,7 @@ env:
   max_hunters_num: 3
   hunters_in_zone: true
   obs_mode: legacy  # Choices: ["legacy", "rel_polar"]
+  action_frame: local
 
   neighbor_N: 3
   coord_summary_obs_enable: false
@@ -37,15 +38,15 @@ reward:
   
   # Collision Penalty
   target_collision_penalty: 5.0
-  collision_penalty_k: 2.0
-  collision_penalty_cap: 5.0
+  collision_penalty_k: 5.0
+  collision_penalty_cap: 15.0
   safe_zone_penalty_scale: 1.0
   
   # Base chase reward
   base_reward_mode: legacy  # Choices: ["legacy", "delta_window"]
   
-  base_far_scale: 0.2
-  base_near_scale: 1.0
+  base_far_scale: 0.5
+  base_near_scale: 2.0
   base_streak_scale: 0.2
   base_streak_cap: 30
   base_reward_inside_escape_scale: 0.4  # d<=escape_radius时base_reward缩放，避免与escape_gap冲突
