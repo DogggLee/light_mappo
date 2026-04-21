@@ -9,6 +9,9 @@ exp:
   n_eval_rollout_threads: 10
   n_render_rollout_threads: 1
   num_env_steps: 1000000
+  bad_stop_eval_times: 0
+  bad_stop_max_episode: 0
+  bad_stop_capture_rate_threshold: null
   role_buffer_mode: separate  # Choices: ["separate", "role_shared"]
 
 # Algorithm profile registry:
@@ -328,6 +331,12 @@ pretrained:
 rule_demo:
   output_root: results/rule_baselines
   eval_zone_split: true
+  save_gifs: false
+  save_png: false
+  gif_env_limit: 6
+  gif_frame_interval: 10
+  gif_frame_duration: 0.3
+  gif_final_hold_sec: 3.0
   angelani_chase_weight: 1.0
   angelani_separation_weight: 0.45
   angelani_wall_weight: 0.25

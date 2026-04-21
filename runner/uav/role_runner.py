@@ -104,6 +104,14 @@ class RoleBasedRunner(object):
         self.algorithm_backend = str(getattr(self.cfg.exp, "algorithm_backend", ""))
         self.experiment_name = str(self.cfg.exp.experiment_name)
         self.env_name = str(self.cfg.env.env_name)
+        self.bad_stop_eval_times = self.cfg.exp.bad_stop_eval_times
+        self.bad_stop_max_episode = self.cfg.exp.bad_stop_max_episode
+        raw_bad_stop_capture_rate_threshold = self.cfg.exp.bad_stop_capture_rate_threshold
+        self.bad_stop_capture_rate_threshold = (
+            None
+            if raw_bad_stop_capture_rate_threshold is None
+            else float(raw_bad_stop_capture_rate_threshold)
+        )
         self.role_buffer_mode = str(getattr(self.cfg.exp, "role_buffer_mode", "separate")).lower()
         if self.role_buffer_mode not in ("separate", "role_shared"):
             raise ValueError(
@@ -457,8 +465,24 @@ class RoleBasedRunner(object):
                 self.eval_csv_path,
             )
         )
+        print(
+            "[TrainStart] bad_stop_eval_times={}, bad_stop_max_episode={}, bad_stop_capture_rate_threshold={}".format(
+                int(self.bad_stop_eval_times),
+                int(self.bad_stop_max_episode),
+                "None"
+                if self.bad_stop_capture_rate_threshold is None
+                else "{:.4f}".format(float(self.bad_stop_capture_rate_threshold)),
+            )
+        )
 
         # Step 3: episode主循环
+        total_num_steps = 0
+        bad_stop_enabled = bool(self.bad_stop_eval_times > 0 and self.bad_stop_max_episode > 0)
+        bad_stop_consecutive_no_improve = 0
+        bad_stop_early_stopped = False
+        bad_stop_best = {
+            "capture_rate": -np.inf,
+        }
         for episode in range(episodes):
             if self.use_linear_lr_decay:
                 for role_name in self.role_trainers.keys():
@@ -727,8 +751,68 @@ class RoleBasedRunner(object):
                         )
                         self._update_bucket_best_metrics("target_learn", target_learn_metrics)
 
+                # bad-stop：在指定episode之前，若连续多次eval均未刷新性能指标则提前结束训练。
+                if bad_stop_enabled:
+                    improved_metrics = []
+                    cur_rate = float(fixed_metrics.get("capture_rate", float("nan")))
+                    eps_cmp = 1e-8
+
+                    if np.isfinite(cur_rate) and cur_rate > float(bad_stop_best["capture_rate"]) + eps_cmp:
+                        bad_stop_best["capture_rate"] = float(cur_rate)
+                        improved_metrics.append("capture_rate")
+
+                    if len(improved_metrics) > 0:
+                        bad_stop_consecutive_no_improve = 0
+                    elif int(episode) <= int(self.bad_stop_max_episode):
+                        bad_stop_consecutive_no_improve += 1
+
+                    self._print_metric_table(
+                        "BadStop",
+                        {
+                            "episode": str(int(episode)),
+                            "gate_before_ep": str(int(self.bad_stop_max_episode)),
+                            "no_improve_streak": str(int(bad_stop_consecutive_no_improve)),
+                            "threshold": str(int(self.bad_stop_eval_times)),
+                            "updated": ",".join(improved_metrics) if len(improved_metrics) > 0 else "none",
+                        },
+                    )
+
+                    if (
+                        int(episode) <= int(self.bad_stop_max_episode)
+                        and int(bad_stop_consecutive_no_improve) >= int(self.bad_stop_eval_times)
+                    ):
+                        bad_stop_early_stopped = True
+                        print(
+                            "[BadStop] trigger early stop at episode {} (streak {} >= {}, gate<{}).".format(
+                                int(episode),
+                                int(bad_stop_consecutive_no_improve),
+                                int(self.bad_stop_eval_times),
+                                int(self.bad_stop_max_episode),
+                            )
+                        )
+                        break
+
+                    # bad-stop补充条件：到达bad_stop_max_episode时，若best_capture_rate仍低于阈值则提前结束。
+                    if (
+                        self.bad_stop_capture_rate_threshold is not None
+                        and int(episode) >= int(self.bad_stop_max_episode)
+                        and float(bad_stop_best["capture_rate"]) < float(self.bad_stop_capture_rate_threshold)
+                    ):
+                        bad_stop_early_stopped = True
+                        print(
+                            "[BadStop] trigger at gate episode {} because best_capture_rate {:.4f} < threshold {:.4f}.".format(
+                                int(episode),
+                                float(bad_stop_best["capture_rate"]),
+                                float(self.bad_stop_capture_rate_threshold),
+                            )
+                        )
+                        break
+
         # Step 4: 训练完成后，重载所有最优模型并执行最终评估。
-        self._final_eval_saved_best_models(total_num_steps=int(self.num_env_steps), episode=int(episodes - 1))
+        if bool(bad_stop_early_stopped):
+            print("[BadStop] skip _final_eval_saved_best_models due to early stop.")
+        else:
+            self._final_eval_saved_best_models(total_num_steps=int(total_num_steps), episode=int(episodes - 1))
 
     def run_time_stat(self):
         """
