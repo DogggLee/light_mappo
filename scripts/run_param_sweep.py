@@ -422,7 +422,7 @@ def _prepare_experiments(sweep_cfg, sweep_path):
     for idx, combo in enumerate(combos):
         cfg_i = json.loads(json.dumps(base_cfg))
         combo_name = _build_experiment_name(combo)
-        exp_name = combo_name
+        exp_name = "exp_{:04d} + {}".format(int(idx), combo_name)
         _set_by_path(cfg_i, "exp.experiment_name", exp_name)
         if fixed_exp_prefix is not None:
             _set_by_path_if_exists(cfg_i, "env.env_name", str(fixed_exp_prefix))
@@ -583,13 +583,23 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
         输入:
             run_dir (str): run目录。
         输出:
-            dict: 包含episode, best_capture_rate, best_capture_steps, best_alive_rate。
+            dict: 包含episode、当前指标与各指标最优值及其episode。
         """
         out = {
             "episode": None,
+            "current_capture_rate": None,
+            "current_capture_steps": None,
+            "current_alive_rate": None,
             "best_capture_rate": None,
+            "best_capture_rate_episode": None,
             "best_capture_steps": None,
+            "best_capture_steps_episode": None,
             "best_alive_rate": None,
+            "best_alive_rate_episode": None,
+            "best_capture_steps_metric": None,
+            "best_capture_steps_metric_episode": None,
+            "best_alive_rate_metric": None,
+            "best_alive_rate_metric_episode": None,
         }
         if not run_dir:
             return out
@@ -598,57 +608,164 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
         eval_path = run_path / "eval.csv"
         log_path = run_path / "log.csv"
 
-        # 优先从eval.csv读取capture指标，并计算当前最大episode。
+        # 优先从eval.csv读取指标，并按严格双桶口径聚合episode指标。
         if eval_path.exists():
             try:
                 with open(eval_path, "r", newline="", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     best_rate = None
+                    best_rate_ep = None
                     best_steps = None
+                    best_steps_ep = None
                     best_alive = None
+                    best_alive_ep = None
+                    best_steps_metric = None
+                    best_steps_metric_ep = None
+                    best_alive_metric = None
+                    best_alive_metric_ep = None
+                    ep_bucket_metrics = {}
+
+                    def _ep_key(ep_val):
+                        if ep_val is None:
+                            return None
+                        if abs(float(ep_val) - float(int(ep_val))) <= 1e-9:
+                            return int(ep_val)
+                        return float(ep_val)
+
+                    def _mean_or_none(vals):
+                        valid = [float(v) for v in vals if v is not None]
+                        if len(valid) <= 0:
+                            return None
+                        return float(sum(valid) / float(len(valid)))
+
+                    def _aggregate_ep_metrics(bucket_map):
+                        # 严格口径：仅当fixed_zone_false与fixed_zone_true同时存在时才产出指标。
+                        lower_map = {str(k).strip().lower(): v for k, v in bucket_map.items()}
+                        dual_keys = ["fixed_zone_false", "fixed_zone_true"]
+                        if not all(k in lower_map for k in dual_keys):
+                            return None
+                        rows = [lower_map[k] for k in dual_keys]
+                        return {
+                            "capture_rate": _mean_or_none([r.get("capture_rate", None) for r in rows]),
+                            "capture_steps": _mean_or_none([r.get("capture_steps", None) for r in rows]),
+                            "alive_rate": _mean_or_none([r.get("alive_rate", None) for r in rows]),
+                        }
+
                     for row in reader:
                         ep = _parse_float(row, "episode")
-                        if ep is not None and (out["episode"] is None or ep > out["episode"]):
-                            out["episode"] = ep
-
+                        bucket = str(row.get("bucket", ""))
                         cap_rate = _parse_float(row, "capture_rate")
                         cap_steps = _parse_float(row, "capture_steps")
                         alive_rate = _parse_float(row, "alive_rate")
-                        if cap_rate is None:
-                            continue
-                        if best_rate is None or cap_rate > best_rate:
-                            best_rate = cap_rate
-                            best_steps = cap_steps
-                            best_alive = alive_rate
-                        elif cap_rate == best_rate:
-                            # capture_rate并列时，优先更小capture_steps。
-                            if cap_steps is not None and (best_steps is None or cap_steps < best_steps):
-                                best_steps = cap_steps
-                                best_alive = alive_rate
-                            elif cap_steps == best_steps:
-                                # capture_rate与capture_steps都并列时，优先更大alive_rate。
-                                if alive_rate is not None and (best_alive is None or alive_rate > best_alive):
-                                    best_alive = alive_rate
-                    out["best_capture_rate"] = best_rate
-                    out["best_capture_steps"] = best_steps
-                    out["best_alive_rate"] = best_alive
-            except Exception:
-                pass
 
-        # 若eval.csv尚未产生有效episode，则回退到log.csv。
-        if out["episode"] is None and log_path.exists():
-            try:
-                with open(log_path, "r", newline="", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    max_ep = None
-                    for row in reader:
-                        ep = _parse_float(row, "episode")
-                        if ep is not None and (max_ep is None or ep > max_ep):
-                            max_ep = ep
-                    out["episode"] = max_ep
+                        if ep is not None:
+                            ep_key = _ep_key(ep)
+                            if ep_key not in ep_bucket_metrics:
+                                ep_bucket_metrics[ep_key] = {}
+                            ep_bucket_metrics[ep_key][str(bucket).strip().lower()] = {
+                                "capture_rate": cap_rate,
+                                "capture_steps": cap_steps,
+                                "alive_rate": alive_rate,
+                            }
+
+                    # 按episode聚合fixed指标后，再计算当前与最优。
+                    ep_keys = sorted(ep_bucket_metrics.keys(), key=lambda x: float(x))
+                    agg_by_ep = []
+                    for ep_key in ep_keys:
+                        agg = _aggregate_ep_metrics(ep_bucket_metrics[ep_key])
+                        if agg is None:
+                            continue
+                        agg_by_ep.append((ep_key, agg))
+
+                    if len(agg_by_ep) > 0:
+                        cur_ep, cur_metrics = agg_by_ep[-1]
+                        out["episode"] = cur_ep
+                        out["current_capture_rate"] = cur_metrics.get("capture_rate", None)
+                        out["current_capture_steps"] = cur_metrics.get("capture_steps", None)
+                        out["current_alive_rate"] = cur_metrics.get("alive_rate", None)
+
+                    for ep_key, agg in agg_by_ep:
+                        cap_rate = agg.get("capture_rate", None)
+                        cap_steps = agg.get("capture_steps", None)
+                        alive_rate = agg.get("alive_rate", None)
+
+                        if cap_rate is not None:
+                            if best_rate is None or float(cap_rate) > float(best_rate):
+                                best_rate = float(cap_rate)
+                                best_rate_ep = ep_key
+                                best_steps = None if cap_steps is None else float(cap_steps)
+                                best_steps_ep = ep_key
+                                best_alive = None if alive_rate is None else float(alive_rate)
+                                best_alive_ep = ep_key
+                            elif float(cap_rate) == float(best_rate):
+                                if cap_steps is not None and (best_steps is None or float(cap_steps) < float(best_steps)):
+                                    best_steps = float(cap_steps)
+                                    best_steps_ep = ep_key
+                                    best_alive = None if alive_rate is None else float(alive_rate)
+                                    best_alive_ep = ep_key
+                                elif cap_steps is not None and best_steps is not None and float(cap_steps) == float(best_steps):
+                                    if alive_rate is not None and (best_alive is None or float(alive_rate) > float(best_alive)):
+                                        best_alive = float(alive_rate)
+                                        best_alive_ep = ep_key
+
+                        if cap_steps is not None:
+                            if best_steps_metric is None or float(cap_steps) < float(best_steps_metric):
+                                best_steps_metric = float(cap_steps)
+                                best_steps_metric_ep = ep_key
+
+                        if alive_rate is not None:
+                            if best_alive_metric is None or float(alive_rate) > float(best_alive_metric):
+                                best_alive_metric = float(alive_rate)
+                                best_alive_metric_ep = ep_key
+
+                    out["best_capture_rate"] = best_rate
+                    out["best_capture_rate_episode"] = best_rate_ep
+                    out["best_capture_steps"] = best_steps
+                    out["best_capture_steps_episode"] = best_steps_ep
+                    out["best_alive_rate"] = best_alive
+                    out["best_alive_rate_episode"] = best_alive_ep
+                    out["best_capture_steps_metric"] = best_steps_metric
+                    out["best_capture_steps_metric_episode"] = best_steps_metric_ep
+                    out["best_alive_rate_metric"] = best_alive_metric
+                    out["best_alive_rate_metric_episode"] = best_alive_metric_ep
             except Exception:
                 pass
         return out
+
+    last_reported_episode_by_exp = {}
+
+    def _has_new_strict_progress():
+        """
+        功能:
+            检查运行中实验是否出现了新的“严格口径”评估episode。
+        输入:
+            无。
+        输出:
+            bool: True表示检测到新episode（且三项指标齐全）。
+        """
+        has_new = False
+        for exp_item in manifest:
+            if str(exp_item.get("status", "")) != "running":
+                continue
+            run_dir = str(exp_item.get("run_dir", ""))
+            if run_dir == "":
+                run_dir = _latest_run_dir(exp_item["config_path"])
+                if run_dir != "":
+                    exp_item["run_dir"] = str(run_dir)
+            prog = _read_run_progress(run_dir)
+            ep = prog.get("episode", None)
+            cur_rate = prog.get("current_capture_rate", None)
+            cur_steps = prog.get("current_capture_steps", None)
+            cur_alive = prog.get("current_alive_rate", None)
+            if ep is None or cur_rate is None or cur_steps is None or cur_alive is None:
+                continue
+            exp_id = int(exp_item.get("id", -1))
+            ep_val = float(ep)
+            prev_ep = last_reported_episode_by_exp.get(exp_id, None)
+            if prev_ep is None or ep_val > float(prev_ep) + 1e-9:
+                last_reported_episode_by_exp[exp_id] = ep_val
+                has_new = True
+        return bool(has_new)
 
     def _print_progress():
         """
@@ -773,27 +890,56 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
                     exp_item["run_dir"] = str(run_dir)
             prog = _read_run_progress(run_dir)
             ep = prog["episode"]
+            cur_rate = prog.get("current_capture_rate", None)
+            cur_steps = prog.get("current_capture_steps", None)
+            cur_alive = prog.get("current_alive_rate", None)
             best_rate = prog["best_capture_rate"]
-            best_steps = prog["best_capture_steps"]
-            best_alive = prog["best_alive_rate"]
+            best_rate_ep = prog.get("best_capture_rate_episode", None)
+            best_steps = prog.get("best_capture_steps_metric", None)
+            best_steps_ep = prog.get("best_capture_steps_metric_episode", None)
+            best_alive = prog.get("best_alive_rate_metric", None)
+            best_alive_ep = prog.get("best_alive_rate_metric_episode", None)
             ep_text = "NA" if ep is None else str(int(ep)) if abs(ep - int(ep)) <= 1e-9 else "{:.2f}".format(ep)
-            rate_text = "NA" if best_rate is None else "{:.4f}".format(float(best_rate))
-            steps_text = "NA" if best_steps is None else "{:.2f}".format(float(best_steps))
-            alive_text = "NA" if best_alive is None else "{:.4f}".format(float(best_alive))
+            rate_text = (
+                "NA/NA(ep=NA)"
+                if (cur_rate is None and best_rate is None)
+                else "{}/{}(ep={})".format(
+                    "NA" if cur_rate is None else "{:.4f}".format(float(cur_rate)),
+                    "NA" if best_rate is None else "{:.4f}".format(float(best_rate)),
+                    "NA" if best_rate_ep is None else str(int(best_rate_ep)),
+                )
+            )
+            steps_text = (
+                "NA/NA(ep=NA)"
+                if (cur_steps is None and best_steps is None)
+                else "{}/{}(ep={})".format(
+                    "NA" if cur_steps is None else "{:.2f}".format(float(cur_steps)),
+                    "NA" if best_steps is None else "{:.2f}".format(float(best_steps)),
+                    "NA" if best_steps_ep is None else str(int(best_steps_ep)),
+                )
+            )
+            alive_text = (
+                "NA/NA(ep=NA)"
+                if (cur_alive is None and best_alive is None)
+                else "{}/{}(ep={})".format(
+                    "NA" if cur_alive is None else "{:.4f}".format(float(cur_alive)),
+                    "NA" if best_alive is None else "{:.4f}".format(float(best_alive)),
+                    "NA" if best_alive_ep is None else str(int(best_alive_ep)),
+                )
+            )
             print(
-                "[Sweep][Running] exp_{:04d} episode={} best_capture_rate={} best_capture_steps={} best_alive_rate={} run_dir={}".format(
+                "[Sweep][Running] exp_{:04d} episode={} capture_rate(cur/best@ep)={} capture_steps(cur/best@ep)={} alive_rate(cur/best@ep)={}".format(
                     int(exp_item["id"]),
                     ep_text,
                     rate_text,
                     steps_text,
                     alive_text,
-                    str(exp_item.get("run_dir", "")),
                 )
             )
 
     pending = list(manifest)
     running = []
-    last_progress_ts = 0.0
+    last_scan_ts = 0.0
     while len(pending) > 0 or len(running) > 0:
         while len(pending) > 0 and len(running) < max_parallel:
             item = pending.pop(0)
@@ -847,12 +993,14 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
         running = still_running
         _write_manifest(output_dir, manifest)
         now_ts = float(time.time())
-        if (now_ts - last_progress_ts) >= progress_interval_sec:
-            _print_progress()
-            last_progress_ts = now_ts
+        if (now_ts - last_scan_ts) >= progress_interval_sec:
+            last_scan_ts = now_ts
+            if _has_new_strict_progress():
+                _print_progress()
         if len(pending) > 0 or len(running) > 0:
             time.sleep(5.0)
-    _print_progress()
+    if _has_new_strict_progress():
+        _print_progress()
     _write_manifest(output_dir, manifest)
     return manifest
 

@@ -4,7 +4,7 @@ max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: polar_rwdHanking_collided
+env_name: delBase_sweep
 progress_interval_sec: 300
 progress_topk: 3
 
@@ -14,7 +14,7 @@ parameters:
   env.hunter_collision_state_mode:
     values: [collided]
   reward.base_reward_mode:
-    values: [legacy, delta_window]
+    values: [delta_window]
   
   reward.mi_diversity_enable:
     values: [false]
@@ -41,6 +41,10 @@ conditional_ignore:
     ignore:
       - reward.base_far_scale
       - reward.base_near_scale
+  - when:
+      reward.spread_reward_enable: false
+    ignore:
+      - reward.spread_reward_coef
 
 plot:
   enabled: true
