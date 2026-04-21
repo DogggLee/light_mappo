@@ -1,4 +1,6 @@
 *.pyc
 results
 .*
+results_old/*
+Multi-agent-RL-Toturial
 # datasets/*
