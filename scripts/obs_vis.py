@@ -75,6 +75,7 @@ class ObsVisApp:
         self.reward_history: list[np.ndarray] = []
         self.reward_term_history: dict[str, list[np.ndarray]] = {}
         self.reward_agent_visible_vars: list[tk.BooleanVar] = []
+        self.reward_term_visible_vars: dict[str, tk.BooleanVar] = {}
         self.reward_term_color_cache: dict[str, str] = {}
 
         self.selected_index: int | None = None
@@ -237,7 +238,7 @@ class ObsVisApp:
         target_max = self._cfg_value(("Target", "max_velo"), 12.0)
         target_perc = self._cfg_value(("Target", "perception_radius"), 40.0)
         target_policy = str(self._cfg_value(("env", "target_policy_source"), "learn")).lower()
-        if target_policy not in ("learn", "random", "patrol"):
+        if target_policy not in ("learn", "random", "patrol", "escape"):
             target_policy = "learn"
 
         self.world_size_var = tk.DoubleVar(value=float(world_size))
@@ -306,6 +307,24 @@ class ObsVisApp:
             anchor="w",
             fg="#555555",
         ).pack(fill=tk.X, pady=(6, 0))
+
+        reward_term_frame = tk.LabelFrame(
+            tab_agent,
+            text="Reward Curves - Visible Reward Terms",
+            padx=6,
+            pady=6,
+        )
+        reward_term_frame.pack(fill=tk.X, pady=(8, 0))
+        reward_term_btn_row = tk.Frame(reward_term_frame)
+        reward_term_btn_row.pack(fill=tk.X)
+        tk.Button(reward_term_btn_row, text="All", command=self._set_all_reward_terms_visible).pack(
+            side=tk.LEFT
+        )
+        tk.Button(reward_term_btn_row, text="None", command=self._set_no_reward_terms_visible).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+        self.reward_term_checks_frame = tk.Frame(reward_term_frame)
+        self.reward_term_checks_frame.pack(fill=tk.X, pady=(6, 0))
 
         edit_frame = tk.LabelFrame(tab_agent, text="Selected Agent Control", padx=6, pady=6)
         edit_frame.pack(fill=tk.X, pady=(8, 0))
@@ -414,6 +433,7 @@ class ObsVisApp:
             self.last_step_dones = None
             self.reward_history = []
             self.reward_term_history = {}
+            self.reward_term_visible_vars = {}
         except Exception as exc:
             messagebox.showerror("Env Error", f"Failed to initialize env:\n{exc}")
             return
@@ -473,6 +493,14 @@ class ObsVisApp:
         return action_global.astype(np.float32)
 
     def _record_reward_terms(self, infos: list[dict]) -> None:
+        """
+        功能:
+            从环境step返回的infos中记录reward_*子项历史，并刷新子项可见性控件。
+        输入:
+            infos (list[dict]): env.step返回的逐agent信息列表。
+        输出:
+            无。
+        """
         n_agent = len(infos)
         term_keys = set()
         for info in infos:
@@ -490,6 +518,7 @@ class ObsVisApp:
                     vals[i] = float(info.get(key, 0.0))
 
             self.reward_term_history.setdefault(key, []).append(vals)
+        self._rebuild_reward_term_visibility_controls()
         
         # print('-' * 20)
         # for i, info in enumerate(infos):
@@ -652,6 +681,38 @@ class ObsVisApp:
                 anchor="w",
             ).pack(fill=tk.X)
 
+    def _rebuild_reward_term_visibility_controls(self) -> None:
+        """
+        功能:
+            根据当前已记录的reward子项动态生成全称checkbox。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if not hasattr(self, "reward_term_checks_frame"):
+            return
+
+        term_keys = self._ordered_reward_term_keys()
+        old_vals = {key: var.get() for key, var in self.reward_term_visible_vars.items()}
+        if list(self.reward_term_visible_vars.keys()) == term_keys:
+            return
+
+        for child in self.reward_term_checks_frame.winfo_children():
+            child.destroy()
+
+        self.reward_term_visible_vars = {}
+        for key in term_keys:
+            var = tk.BooleanVar(value=bool(old_vals.get(key, True)))
+            self.reward_term_visible_vars[key] = var
+            tk.Checkbutton(
+                self.reward_term_checks_frame,
+                text=key,
+                variable=var,
+                command=self._draw_reward_plots,
+                anchor="w",
+            ).pack(fill=tk.X)
+
     def _set_all_reward_agents_visible(self) -> None:
         for var in self.reward_agent_visible_vars:
             var.set(True)
@@ -659,6 +720,32 @@ class ObsVisApp:
 
     def _set_no_reward_agents_visible(self) -> None:
         for var in self.reward_agent_visible_vars:
+            var.set(False)
+        self._draw_reward_plots()
+
+    def _set_all_reward_terms_visible(self) -> None:
+        """
+        功能:
+            勾选所有reward子项曲线。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        for var in self.reward_term_visible_vars.values():
+            var.set(True)
+        self._draw_reward_plots()
+
+    def _set_no_reward_terms_visible(self) -> None:
+        """
+        功能:
+            取消勾选所有reward子项曲线。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        for var in self.reward_term_visible_vars.values():
             var.set(False)
         self._draw_reward_plots()
 
@@ -898,10 +985,25 @@ class ObsVisApp:
         if not visible_agents and self.core_env.agent_num > 0:
             visible_agents = [0]
 
-        term_keys = sorted(k for k in self.reward_term_history.keys() if k.startswith("reward_"))
-        if "reward_total" in term_keys:
-            term_keys.remove("reward_total")
-            term_keys = ["reward_total"] + term_keys
+        self._rebuild_reward_term_visibility_controls()
+        term_keys = []
+        for key in self._ordered_reward_term_keys():
+            var = self.reward_term_visible_vars.get(key)
+            if var is not None and var.get():
+                term_keys.append(key)
+        if not term_keys:
+            self.reward_alias_var.set("Alias: (none)")
+            for cv, title in (
+                (self.reward_canvas_inst, "Instant Reward Terms"),
+                (self.reward_canvas_cum, "Cumulative Reward Terms"),
+            ):
+                cv.delete("all")
+                w = max(int(cv.winfo_width()), 120)
+                h = max(int(cv.winfo_height()), 90)
+                cv.create_text(w // 2, 16, text=title, fill="#333333")
+                cv.create_text(w // 2, h // 2, text="No reward terms selected")
+            return
+
         dash_styles = [None, (8, 3), (2, 2), (10, 3, 2, 3), (1, 3), (14, 4), (4, 4, 1, 4)]
         inst_series: list[dict] = []
         for key in term_keys:
@@ -941,6 +1043,21 @@ class ObsVisApp:
         self._draw_single_reward_plot(self.reward_canvas_inst, inst_series, "Instant Reward Terms")
         self._draw_single_reward_plot(self.reward_canvas_cum, cum_series, "Cumulative Reward Terms")
         self._update_reward_alias_hint(term_names=[item["term"] for item in inst_series])
+
+    def _ordered_reward_term_keys(self) -> list[str]:
+        """
+        功能:
+            返回稳定排序的reward子项key，reward_total固定在最前。
+        输入:
+            无。
+        输出:
+            list[str]: 已记录的reward_*子项全称列表。
+        """
+        term_keys = sorted(k for k in self.reward_term_history.keys() if k.startswith("reward_"))
+        if "reward_total" in term_keys:
+            term_keys.remove("reward_total")
+            term_keys = ["reward_total"] + term_keys
+        return term_keys
 
     def _on_reward_height_change(self, _event=None) -> None:
         panel_h = int(np.clip(self.reward_panel_height_var.get(), 220, 700))

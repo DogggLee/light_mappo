@@ -2247,18 +2247,9 @@ class UAVPursuitEnv(object):
             frame_actions.append(frame_action.astype(np.float32))
             exec_actions.append(exec_action.astype(np.float32))
 
-        # 步骤2：执行运动学更新前做越界预判；若动作会导致越界则拒绝该动作（跳过agent.step）。
+        # 步骤2：执行运动学更新；地图边界由BaseAgent.step统一clip，不触发动作拒绝。
         for i, (agent, exec_action) in enumerate(zip(self.agents, exec_actions)):
             action_now = np.asarray(exec_action, dtype=np.float32).reshape(2)
-            if i < self.num_hunters:
-                # Hunter边界预判仅对active且alive且未collided个体生效。
-                if bool(self._hunter_alive_for_team_ops(i)) and self._will_out_of_world_if_step(agent, action_now):
-                    agent.trajectory.append(np.asarray(agent.position, dtype=np.float32).copy())
-                    continue
-            else:
-                if self._will_out_of_world_if_step(agent, action_now):
-                    agent.trajectory.append(np.asarray(agent.position, dtype=np.float32).copy())
-                    continue
             agent.step(action_now, self.dt, self.world_size)
 
         # 多样性历史使用策略原始动作（不使用边界拒绝后的执行动作）。
@@ -2357,44 +2348,6 @@ class UAVPursuitEnv(object):
         if norm <= 1e-8:
             return np.array([1.0, 0.0], dtype=np.float32)
         return (h / norm).astype(np.float32)
-
-    def _will_out_of_world_if_step(self, agent: BaseAgent, action_global: np.ndarray) -> bool:
-        """
-        功能:
-            预测给定agent执行一步后是否会越出地图边界。
-            判据仅使用地图边界，不使用collision_dis等碰撞阈值参数。
-        输入:
-            agent (BaseAgent): 待预测的智能体。
-            action_global (np.ndarray): 全局坐标动作，shape=(2,)。
-        输出:
-            bool: True表示下一步会越界，应拒绝该动作。
-        """
-        if (not bool(agent.alive)) or bool(agent.collided):
-            return False
-        pos = np.asarray(agent.position, dtype=np.float32).reshape(2)
-        vel = np.asarray(agent.velocity, dtype=np.float32).reshape(2)
-        act = np.clip(np.asarray(action_global, dtype=np.float32).reshape(2), -1.0, 1.0)
-
-        if str(agent.control_mode).lower() == "acceleration":
-            next_vel = vel + act * float(agent.max_acc) * float(self.dt)
-            speed = float(np.linalg.norm(next_vel))
-            if speed > float(agent.max_speed) and speed > 1e-8:
-                next_vel = next_vel / speed * float(agent.max_speed)
-        else:
-            desired_velocity = act * float(agent.max_speed)
-            bypass_turn_limit = (
-                str(agent.role).lower() == "target"
-                and str(agent.policy_type).lower() in ("random", "patrol", "greedy", "escape")
-            )
-            next_vel = (
-                desired_velocity
-                if bypass_turn_limit
-                else agent._apply_turn_limit(vel, desired_velocity)
-            )
-
-        next_pos = pos + np.asarray(next_vel, dtype=np.float32) * float(self.dt)
-        ws = float(self.world_size)
-        return bool(np.any(next_pos > ws) or np.any(next_pos < -ws))
 
     def _local_action_to_global(self, action_local: np.ndarray, heading: np.ndarray) -> np.ndarray:
         """
@@ -2941,60 +2894,38 @@ class UAVPursuitEnv(object):
     def _handle_collision(self):
         """
         功能:
-            扫描agent间距离与边界距离并计算风险惩罚/硬碰撞结果，同时标记失活agent。
+            扫描Hunter-Hunter距离并计算风险惩罚/硬碰撞结果，同时标记失活Hunter。
             规则:
-            - Target不参与与其他agent的两两碰撞判定；
-            - 所有active agent均参与边界风险与边界碰撞判定；
-            - Target在任意策略下，边界碰撞均不死亡而是反弹，并施加边界碰撞惩罚。
+            - 仅Hunter-Hunter参与两两碰撞判定；
+            - 地图边界只作为位置clip约束，不产生collision事件或reward惩罚；
+            - Target不参与碰撞判定，也不发生边界碰撞/反弹事件。
         输入:
             无。
         输出:
             tuple:
-                - bool: Target是否发生边界碰撞事件。
+                - bool: Target是否发生边界碰撞事件（当前恒为False）。
                 - np.ndarray: 碰撞奖励分量，shape=(agent_num,)。
         """
         target_collided = False
         collision_pairs = []
-        boundary_collision_agents = []
         agents = self.agents
         mark_hunter_collided = [False] * self.num_hunters
         collision_rewards = np.zeros(self.agent_num, dtype=np.float32)
-        for i in range(self.agent_num):
-            if i < self.num_hunters and (not bool(self.active_hunter_mask[i])):
+        for i in range(self.num_hunters):
+            if not bool(self.active_hunter_mask[i]):
                 continue
             if (not bool(agents[i].alive)) or bool(getattr(agents[i], "collided", False)): # 已失活或已碰撞Agent不重新处理碰撞
                 continue
 
-            # Step 1: 与边界的风险惩罚和硬碰撞判定
-            boundary_dist = self._distance_to_nearest_boundary(agents[i].position)
-            collision_rewards[i] -= _safe_distance_penalty(
-                dist=boundary_dist,
-                safe_dis=float(agents[i].safe_dis),
-                collision_dis=float(self.collision_dis),
-                collision_penalty_k=float(self.collision_penalty_k),
-                safe_zone_penalty_scale=float(self.safe_zone_penalty_scale),
-            )
-            if boundary_dist <= float(self.collision_dis):
-                boundary_collision_agents.append(int(i))
-                if i == self.target_index:
-                    collision_rewards[i] -= float(self.target_collision_penalty)
-                    self._bounce_target_from_boundary()
-                    target_collided = True
-                else:
-                    if i < self.num_hunters:
-                        mark_hunter_collided[i] = True
-
-            for j in range(i + 1, self.agent_num):
-                if j < self.num_hunters and (not bool(self.active_hunter_mask[j])):
+            for j in range(i + 1, self.num_hunters):
+                if not bool(self.active_hunter_mask[j]):
                     continue
                 if (not bool(agents[j].alive)) or bool(getattr(agents[j], "collided", False)): # 已失活或已碰撞Agent不重新处理碰撞
-                    continue
-                if i == self.target_index or j == self.target_index:
                     continue
 
                 dist = float(np.linalg.norm(agents[i].position - agents[j].position))
 
-                # Step 2: 距离进入safe_dis即开始风险惩罚，越接近collision_dis惩罚越大
+                # Step 1: Hunter-Hunter距离进入safe_dis即开始风险惩罚，越接近collision_dis惩罚越大
                 collision_rewards[i] -= _safe_distance_penalty(
                     dist=dist,
                     safe_dis=float(agents[i].safe_dis),
@@ -3010,13 +2941,11 @@ class UAVPursuitEnv(object):
                     safe_zone_penalty_scale=float(self.safe_zone_penalty_scale),
                 )
 
-                # Step 3: 小于collision_dis直接触发硬碰撞
+                # Step 2: 小于collision_dis直接触发Hunter-Hunter硬碰撞
                 if dist <= self.collision_dis:
                     collision_pairs.append((int(i), int(j)))
-                    if i < self.num_hunters:
-                        mark_hunter_collided[i] = True
-                    if j < self.num_hunters:
-                        mark_hunter_collided[j] = True
+                    mark_hunter_collided[i] = True
+                    mark_hunter_collided[j] = True
 
         for hid in range(self.num_hunters):
             if not bool(mark_hunter_collided[hid]):
@@ -3030,7 +2959,7 @@ class UAVPursuitEnv(object):
         if self.collision_penalty_cap > 0:
             collision_rewards = np.maximum(collision_rewards, -float(self.collision_penalty_cap))
         self.last_collision_pairs = collision_pairs
-        self.last_boundary_collision_agents = boundary_collision_agents
+        self.last_boundary_collision_agents = []
         return target_collided, collision_rewards
 
     def _get_capture_success_hunter_ids(self):
@@ -3198,45 +3127,6 @@ class UAVPursuitEnv(object):
                             capture_reward[int(hid)] = float(support_pool) * float(weights[idx])
 
         capture_reward[self.target_index] = -self.target_captured_penalty
-
-    def _bounce_target_from_boundary(self):
-        """
-        功能:
-            对Target执行边界反弹：位置拉回边界内并反射外向速度分量。
-        输入:
-            无。
-        输出:
-            无（内部更新target的位置、速度、朝向与速度标量）。
-        """
-        if not bool(self.target.alive):
-            return
-
-        ws = float(max(1e-6, self.world_size))
-        bounce_margin = float(min(ws * 0.5, max(float(self.collision_dis) + 1e-3, 1e-3)))
-
-        pos = np.asarray(self.target.position, dtype=np.float32).copy()
-        vel = np.asarray(self.target.velocity, dtype=np.float32).copy()
-
-        # Step 1: 反射撞墙方向上的外向速度分量。
-        if pos[0] >= ws - bounce_margin and vel[0] > 0.0:
-            vel[0] = -abs(float(vel[0]))
-        elif pos[0] <= -ws + bounce_margin and vel[0] < 0.0:
-            vel[0] = abs(float(vel[0]))
-
-        if pos[1] >= ws - bounce_margin and vel[1] > 0.0:
-            vel[1] = -abs(float(vel[1]))
-        elif pos[1] <= -ws + bounce_margin and vel[1] < 0.0:
-            vel[1] = abs(float(vel[1]))
-
-        # Step 2: 将Target拉回到边界内侧，避免持续贴边触发硬碰撞。
-        pos = np.clip(pos, -ws + bounce_margin, ws - bounce_margin)
-
-        self.target.position = pos.astype(np.float32)
-        self.target.velocity = vel.astype(np.float32)
-        speed = float(np.linalg.norm(self.target.velocity))
-        self.target.speed = speed
-        if speed > 1e-8:
-            self.target.heading = (self.target.velocity / speed).astype(np.float32)
 
     def _distance_to_nearest_boundary(self, position: np.ndarray) -> float:
         """

@@ -63,7 +63,7 @@ reward:
   base_delta_norm_scale: 20.0
 
   # inter-information MI
-  mi_diversity_enable: false
+  mi_diversity_enable: true
   mi_diversity_coef: 2.0
   traj_diversity_enable: true
   traj_diversity_coef: 2.0
