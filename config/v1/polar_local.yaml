@@ -7,7 +7,7 @@ exp:
 
 # Environment settings (common)
 env:
-  env_name: Tech-Ablation
+  env_name: polar-sweep-Lr-delBase
   world_size: 200
   episode_length: 300 # max steps per episode
   max_hunters_num: 3

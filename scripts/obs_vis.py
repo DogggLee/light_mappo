@@ -728,6 +728,7 @@ class ObsVisApp:
 
         info = (
             f"Role: {agent.role}[{agent.agent_id}]   Alive: {agent.alive}\n"
+            f"Action Frame: {str(getattr(self.core_env, 'action_frame', 'global')).lower()}\n"
             f"Global Position: ({pos[0]:.4f}, {pos[1]:.4f})\n"
             f"Global Velocity: ({vel[0]:.4f}, {vel[1]:.4f})\n"
             f"Speed: {speed:.4f} / Max: {agent.max_speed:.4f}\n"
@@ -1091,6 +1092,29 @@ class ObsVisApp:
         if len(term) <= 16:
             return term
         return term[:13] + "..."
+
+    def _update_reward_alias_hint(self, term_names: list[str]) -> None:
+        """
+        功能:
+            更新reward缩写与原始term的对照说明。
+        输入:
+            term_names (list[str]): 当前显示的term名列表（不含reward_前缀）。
+        输出:
+            无。
+        """
+        uniq = []
+        for term in term_names:
+            if term not in uniq:
+                uniq.append(term)
+        pairs = []
+        for term in uniq:
+            short = self._short_reward_term_label(term)
+            if short != term:
+                pairs.append(f"{short}={term}")
+        if len(pairs) == 0:
+            self.reward_alias_var.set("Alias: (none)")
+        else:
+            self.reward_alias_var.set("Alias: " + " ; ".join(pairs))
 
     def _get_reward_term_color(self, term: str) -> str:
         if term in self.reward_term_color_cache:

@@ -31,6 +31,7 @@ env:
   capture_step: 20
 
   collision_dis: 3
+  hunter_collision_state_mode: dead  # Choices: ["dead", "collided"]
 
   target_pos_init_guidance_step: 10
   target_pos_guidance: true

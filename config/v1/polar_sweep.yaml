@@ -1,0 +1,36 @@
+base_config: config/v1/polar.yaml
+output_dir: results/sweeps/polar
+max_parallel: 4
+python: python
+train_script: train/train.py
+time_stat: false
+
+parameters:
+  env.action_frame:
+    values: [local]
+  reward.base_reward_mode:
+    values: [delta_window]
+  reward.base_delta_window:
+    values: [5, 10]
+  reward.base_delta_hunter_scale:
+    values: [0.5, 1.0, 2.0]
+  reward.mi_diversity_enable:
+    values: [false]
+  reward.speed_penalty:
+    values: [0.2]
+  reward.spread_reward_enable:
+    values: [true]
+  reward.spread_reward_coef:
+    values: [1.0, 2.0, 4.0, 8.0]
+  
+  optim.lr:
+    values: [0.0002, 0.0005, 0.0008, 0.001, 0.002]
+  schedule.use_linear_lr_decay:
+    values: [false, true]
+  domain_randomization.train_split.enable:
+    values: [true]
+
+plot:
+  enabled: true
+  buckets: [fixed_zone_false, fixed_zone_true]
+  metrics: [capture_rate, alive_rate, eval_reward]

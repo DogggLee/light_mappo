@@ -105,6 +105,7 @@ class BaseAgent(object):
         self.heading = np.array([1.0, 0.0], dtype=np.float32)
         self.trajectory: List[np.ndarray] = []
         self.alive = True
+        self.collided = False
 
         self._cached_random_action = np.zeros(2, dtype=np.float32)
         self._last_random_refresh_step = -1
@@ -137,6 +138,7 @@ class BaseAgent(object):
         self.heading = np.array([1.0, 0.0], dtype=np.float32)
         self.trajectory = [self.position.copy()]
         self.alive = True
+        self.collided = False
         self._cached_random_action = np.zeros(2, dtype=np.float32)
         self._last_random_refresh_step = -1
 
@@ -160,6 +162,8 @@ class BaseAgent(object):
             np.ndarray: shape=(2,), 归一化动作。
         """
         if not self.alive:
+            return np.zeros(2, dtype=np.float32)
+        if bool(self.collided):
             return np.zeros(2, dtype=np.float32)
 
         if self.policy_type == "learn":
@@ -192,6 +196,10 @@ class BaseAgent(object):
             无（内部更新position/velocity/trajectory）。
         """
         if not self.alive:
+            self.velocity[:] = 0.0
+            self.trajectory.append(self.position.copy())
+            return
+        if bool(self.collided):
             self.velocity[:] = 0.0
             self.trajectory.append(self.position.copy())
             return
@@ -802,7 +810,7 @@ class TargetAgent(BaseAgent):
             is_active = True
             if active_hunter_mask is not None and hid < len(active_hunter_mask):
                 is_active = bool(active_hunter_mask[hid])
-            if (not is_active) or (not bool(hunter.alive)):
+            if (not is_active) or (not bool(hunter.alive)) or bool(hunter.collided):
                 continue
             vec = np.asarray(self.position, dtype=np.float32) - np.asarray(hunter.position, dtype=np.float32)
             dist = float(np.linalg.norm(vec))
@@ -847,7 +855,7 @@ class TargetAgent(BaseAgent):
         world_size = float(max(1e-6, self.world_size))
         for hid, hunter in enumerate(safe_hunters):
             is_active = bool(safe_mask[hid]) if hid < len(safe_mask) else True
-            if (not is_active) or (not bool(hunter.alive)):
+            if (not is_active) or (not bool(hunter.alive)) or bool(hunter.collided):
                 continue
             has_active_hunter = True
 
@@ -1033,7 +1041,7 @@ class TargetAgent(BaseAgent):
         active_alive_hunters = 0
         for hid, hunter in enumerate(hunters):
             is_active = bool(active_hunter_mask[hid]) if hid < len(active_hunter_mask) else True
-            if is_active and bool(hunter.alive):
+            if is_active and bool(hunter.alive) and (not bool(hunter.collided)):
                 active_alive_hunters += 1
         if active_alive_hunters <= 1:
             return {
@@ -1053,7 +1061,7 @@ class TargetAgent(BaseAgent):
         encircling_hunter_ids = []
         for hid, hunter in enumerate(hunters):
             is_active = bool(active_hunter_mask[hid]) if hid < len(active_hunter_mask) else True
-            if (not is_active) or (not bool(hunter.alive)):
+            if (not is_active) or (not bool(hunter.alive)) or bool(hunter.collided):
                 continue
             rel = np.asarray(hunter.position, dtype=np.float32) - np.asarray(self.position, dtype=np.float32)
             dist = float(np.linalg.norm(rel))
@@ -1399,6 +1407,13 @@ class UAVPursuitEnv(object):
         self.capture_dis = float(env_cfg.capture_dis)
         self.capture_step = int(env_cfg.capture_step)
         self.collision_dis = float(env_cfg.collision_dis)
+        self.hunter_collision_state_mode = str(env_cfg.hunter_collision_state_mode).lower()
+        if self.hunter_collision_state_mode not in ("dead", "collided"):
+            raise ValueError(
+                "Unsupported env.hunter_collision_state_mode: {} (choices: dead, collided)".format(
+                    str(self.hunter_collision_state_mode)
+                )
+            )
         self.hunters_in_zone = bool(env_cfg.hunters_in_zone)
         self.target_avoid_hunter_zone = bool(env_cfg.target_avoid_hunter_zone)
         self.target_hunter_zone_min_dis = float(max(0.0, env_cfg.target_hunter_zone_min_dis))
@@ -1826,9 +1841,11 @@ class UAVPursuitEnv(object):
         for hid, hunter in enumerate(self.hunters):
             hunter.reset(np.asarray(init_positions[hid], dtype=np.float32))
             hunter.heading = np.asarray(init_headings[hid], dtype=np.float32).copy()
+            hunter.collided = False
             self.hunter_behavior_histories[hid].clear()
             if not bool(self.active_hunter_mask[hid]):
                 hunter.alive = False
+                hunter.collided = False
                 hunter.position[:] = 0.0
                 hunter.velocity[:] = 0.0
                 hunter.heading = np.asarray(init_headings[hid], dtype=np.float32).copy()
@@ -1837,6 +1854,7 @@ class UAVPursuitEnv(object):
 
         self.target.reset(np.asarray(init_positions[self.target_index], dtype=np.float32))
         self.target.heading = np.asarray(init_headings[self.target_index], dtype=np.float32).copy()
+        self.target.collided = False
 
         # 步骤3：返回初始观测
         return self._build_obs(team_sees_target=False)
@@ -2272,9 +2290,7 @@ class UAVPursuitEnv(object):
         # 步骤5：终止条件判定
         self.step_count += 1
         timeout = self.step_count >= self.max_steps
-        all_hunters_dead = not any(
-            bool(self.active_hunter_mask[i]) and bool(h.alive) for i, h in enumerate(self.hunters)
-        )
+        all_hunters_dead = not any(bool(self._hunter_alive_for_team_ops(i)) for i in range(self.num_hunters))
         episode_end = timeout or captured or all_hunters_dead
 
         if episode_end:
@@ -2290,6 +2306,7 @@ class UAVPursuitEnv(object):
             {
                 "role": a.role,
                 "alive": bool(a.alive),
+                "collided": bool(getattr(a, "collided", False)),
                 "captured": bool(captured),
                 "target_collided": bool(target_collided),
                 "team_sees_target": bool(team_sees_target),
@@ -2645,7 +2662,7 @@ class UAVPursuitEnv(object):
                 linewidths=0.5,
             )
             for hid, hunter in enumerate(self.hunters):
-                if not bool(self.active_hunter_mask[hid]):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
                     continue
                 if not hunter.alive:
                     continue
@@ -2811,7 +2828,7 @@ class UAVPursuitEnv(object):
         for hid, h in enumerate(self.hunters):
             if not bool(self.active_hunter_mask[hid]):
                 continue
-            if not h.alive:
+            if (not h.alive) or bool(h.collided):
                 continue
             if self.hunter_perception_radius < 0:
                 return True
@@ -2866,7 +2883,7 @@ class UAVPursuitEnv(object):
             if not bool(self.active_hunter_mask[i]):
                 self.capture_counter[i] = 0
                 continue
-            if not h.alive:
+            if (not h.alive) or bool(h.collided):
                 self.capture_counter[i] = 0
                 continue
             d = float(np.linalg.norm(h.position - self.target.position))
@@ -2892,7 +2909,7 @@ class UAVPursuitEnv(object):
         collision_pairs = []
         boundary_collision_agents = []
         agents = self.agents
-        disable = [False] * self.agent_num
+        mark_hunter_collided = [False] * self.num_hunters
         collision_rewards = np.zeros(self.agent_num, dtype=np.float32)
         for i in range(self.agent_num):
             if i < self.num_hunters and (not bool(self.active_hunter_mask[i])):
@@ -2916,7 +2933,8 @@ class UAVPursuitEnv(object):
                     self._bounce_target_from_boundary()
                     target_collided = True
                 else:
-                    disable[i] = True
+                    if i < self.num_hunters:
+                        mark_hunter_collided[i] = True
 
             for j in range(i + 1, self.agent_num):
                 if j < self.num_hunters and (not bool(self.active_hunter_mask[j])):
@@ -2947,13 +2965,20 @@ class UAVPursuitEnv(object):
                 # Step 3: 小于collision_dis直接触发硬碰撞
                 if dist <= self.collision_dis:
                     collision_pairs.append((int(i), int(j)))
-                    disable[i] = True
-                    disable[j] = True
+                    if i < self.num_hunters:
+                        mark_hunter_collided[i] = True
+                    if j < self.num_hunters:
+                        mark_hunter_collided[j] = True
 
-        for idx, d in enumerate(disable):
-            if d:
-                agents[idx].alive = False
-                agents[idx].velocity[:] = 0.0
+        for hid in range(self.num_hunters):
+            if not bool(mark_hunter_collided[hid]):
+                continue
+            hunter = self.hunters[hid]
+            hunter.velocity[:] = 0.0
+            if self.hunter_collision_state_mode == "collided":
+                hunter.collided = True
+            else:
+                hunter.alive = False
         if self.collision_penalty_cap > 0:
             collision_rewards = np.maximum(collision_rewards, -float(self.collision_penalty_cap))
         self.last_collision_pairs = collision_pairs
@@ -2971,9 +2996,7 @@ class UAVPursuitEnv(object):
         """
         captor_ids = []
         for hid in range(self.num_hunters):
-            if not bool(self.active_hunter_mask[hid]):
-                continue
-            if not bool(self.hunters[hid].alive):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
                 continue
             if int(self.capture_counter[hid]) >= int(self.capture_step):
                 captor_ids.append(int(hid))
@@ -2991,10 +3014,8 @@ class UAVPursuitEnv(object):
         encircle_ids = []
         escape_radius = float(getattr(self.target, "escape_dis", 0.0))
         for hid in range(self.num_hunters):
-            if not bool(self.active_hunter_mask[hid]):
-                continue
             hunter = self.hunters[hid]
-            if not bool(hunter.alive):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
                 continue
             dist = float(np.linalg.norm(np.asarray(hunter.position) - np.asarray(self.target.position)))
             if escape_radius > 0.0 and dist > escape_radius:
@@ -3068,9 +3089,7 @@ class UAVPursuitEnv(object):
         if mode == "team":
             eligible_ids = []
             for hid in range(self.num_hunters):
-                if not bool(self.active_hunter_mask[hid]):
-                    continue
-                if not bool(self.hunters[hid].alive):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
                     continue
                 eligible_ids.append(int(hid))
             if len(eligible_ids) > 0:
@@ -3097,9 +3116,7 @@ class UAVPursuitEnv(object):
                     continue
                 if hid < 0 or hid >= self.num_hunters:
                     continue
-                if not bool(self.active_hunter_mask[hid]):
-                    continue
-                if not bool(self.hunters[hid].alive):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
                     continue
                 support_ids.append(int(hid))
 
@@ -3191,6 +3208,23 @@ class UAVPursuitEnv(object):
         # Step 2: 返回最小非负边界距离
         return float(max(0.0, min(margin_x, margin_y)))
 
+    def _hunter_alive_for_team_ops(self, hid: int) -> bool:
+        """
+        功能:
+            判断Hunter是否参与团队几何/协同计算。
+        输入:
+            hid (int): Hunter索引。
+        输出:
+            bool: True表示active且alive且未collided。
+        """
+        idx = int(hid)
+        if idx < 0 or idx >= self.num_hunters:
+            return False
+        if not bool(self.active_hunter_mask[idx]):
+            return False
+        hunter = self.hunters[idx]
+        return bool(hunter.alive) and (not bool(hunter.collided))
+
     def _count_active_alive_hunters(self) -> int:
         """
         功能:
@@ -3202,9 +3236,8 @@ class UAVPursuitEnv(object):
         """
         cnt = 0
         for hid in range(self.num_hunters):
-            if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
-                continue
-            cnt += 1
+            if bool(self._hunter_alive_for_team_ops(hid)):
+                cnt += 1
         return int(max(0, cnt))
 
     def _get_hunter_count_balance_scale(self) -> float:
@@ -3252,9 +3285,7 @@ class UAVPursuitEnv(object):
         if selected_actions is None:
             return
         for hid in range(self.num_hunters):
-            if not bool(self.active_hunter_mask[hid]):
-                continue
-            if not bool(self.hunters[hid].alive):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
                 continue
             if hid >= len(selected_actions):
                 continue
@@ -3297,7 +3328,7 @@ class UAVPursuitEnv(object):
         temp = float(self.mi_diversity_temperature)
         scores = []
         for hid in range(self.num_hunters):
-            if not bool(self.active_hunter_mask[hid]) or (not bool(self.hunters[hid].alive)):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
                 continue
             hist_i = self.hunter_behavior_histories[hid]
             if len(hist_i) < 2:
@@ -3311,7 +3342,7 @@ class UAVPursuitEnv(object):
             for oid in range(self.num_hunters):
                 if oid == hid:
                     continue
-                if not bool(self.active_hunter_mask[oid]) or (not bool(self.hunters[oid].alive)):
+                if not bool(self._hunter_alive_for_team_ops(oid)):
                     continue
                 hist_o = self.hunter_behavior_histories[oid]
                 if len(hist_o) <= 0:
@@ -3354,7 +3385,7 @@ class UAVPursuitEnv(object):
         win = int(max(2, self.traj_diversity_window))
         feat_by_hid = {}
         for hid in range(self.num_hunters):
-            if not bool(self.active_hunter_mask[hid]) or (not bool(self.hunters[hid].alive)):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
                 continue
             traj = np.asarray(self.hunters[hid].trajectory, dtype=np.float32)
             if traj.shape[0] < win + 1:
@@ -3402,7 +3433,7 @@ class UAVPursuitEnv(object):
         valid_hunter_ids = []
         target_pos = np.asarray(self.target.position, dtype=np.float32)
         for hid in range(self.num_hunters):
-            if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
                 continue
             rel = target_pos - np.asarray(self.hunters[hid].position, dtype=np.float32)
             rel_norm = float(np.linalg.norm(rel))
@@ -3515,7 +3546,7 @@ class UAVPursuitEnv(object):
             # Step 1.1: 旧版base reward（距离分段 + streak）
             active_dist_pairs = []
             for hid, hunter in enumerate(self.hunters):
-                if not bool(self.active_hunter_mask[hid]):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
                     continue
                 d_val = float(np.linalg.norm(hunter.position - self.target.position))
                 active_dist_pairs.append((d_val, int(hid)))
@@ -3527,7 +3558,7 @@ class UAVPursuitEnv(object):
                 topk_ids = {hid for _, hid in active_dist_pairs}
 
             for i, h in enumerate(self.hunters):
-                if not bool(self.active_hunter_mask[i]):
+                if not bool(self._hunter_alive_for_team_ops(i)):
                     continue
                 d = float(np.linalg.norm(h.position - self.target.position))
                 hunter_d.append(d)
@@ -3592,7 +3623,7 @@ class UAVPursuitEnv(object):
             for hid in gap_hunter_ids:
                 if hid < 0 or hid >= self.num_hunters:
                     continue
-                if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
                     continue
                 escape_gap_encircle_hunter_reward[int(hid)] = float(gap_hunter_encircle_reward_value)
                 escape_gap_intercept_hunter_reward[int(hid)] = float(gap_hunter_intercept_reward_value)
@@ -3669,6 +3700,25 @@ class UAVPursuitEnv(object):
             + collision_rewards
             + speed_penalty_reward
         ).astype(np.float32)
+        # Step 4.1: collided hunter仅保留collision_reward，其余reward分量清零。
+        collided_ids = [hid for hid in range(self.num_hunters) if bool(self.hunters[hid].collided)]
+        if len(collided_ids) > 0:
+            for hid in collided_ids:
+                hunter_base_reward[hid] = 0.0
+                hunter_streak_reward[hid] = 0.0
+                capture_reward[hid] = 0.0
+                escape_gap_reward[hid] = 0.0
+                escape_gap_hunter_reward[hid] = 0.0
+                escape_gap_encircle_reward[hid] = 0.0
+                escape_gap_intercept_reward[hid] = 0.0
+                escape_gap_encircle_hunter_reward[hid] = 0.0
+                escape_gap_intercept_hunter_reward[hid] = 0.0
+                diversity_reward[hid] = 0.0
+                diversity_mi_reward[hid] = 0.0
+                diversity_traj_reward[hid] = 0.0
+                spread_reward[hid] = 0.0
+                speed_penalty_reward[hid] = 0.0
+                total[hid] = float(collision_rewards[hid])
         if not bool(include_target_reward):
             total[self.target_index] = 0.0
         reward_terms = {
@@ -3810,7 +3860,7 @@ class UAVPursuitEnv(object):
             # topK hunter相对极坐标: [dist, dir, valid]
             hunter_candidates = []
             for hid in range(self.num_hunters):
-                if (not bool(self.active_hunter_mask[hid])) or (not bool(self.hunters[hid].alive)):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
                     continue
                 if i < self.num_hunters and int(hid) == int(i):
                     continue
@@ -3872,8 +3922,7 @@ class UAVPursuitEnv(object):
             if (
                 ai.role == "hunter"
                 and aj.role == "hunter"
-                and aj.alive
-                and bool(self.active_hunter_mask[j])
+                and bool(self._hunter_alive_for_team_ops(j))
             ):
                 dist = float(np.linalg.norm(aj.position - ai.position))
                 candidates.append((dist, j))
@@ -3926,7 +3975,7 @@ class UAVPursuitEnv(object):
 
         # Target侧：观测最近且存活的hunter，visible表示是否存在有效hunter。
         alive_hunters = [
-            h for idx, h in enumerate(self.hunters) if h.alive and bool(self.active_hunter_mask[idx])
+            h for idx, h in enumerate(self.hunters) if bool(self._hunter_alive_for_team_ops(idx))
         ]
         if len(alive_hunters) == 0:
             return np.zeros(self.target_feat_dim, dtype=np.float32)
@@ -3956,7 +4005,7 @@ class UAVPursuitEnv(object):
         """
         ai = self.agents[i]
         aj = self.agents[j]
-        if not aj.alive:
+        if (not bool(aj.alive)) or bool(aj.collided):
             return np.zeros(5, dtype=np.float32)
 
         visible = False
@@ -4031,11 +4080,7 @@ class UAVPursuitEnv(object):
             return np.zeros(2, dtype=np.float32)
 
         # Step 1: 计算self是否位于“距离Target最近的Top-K Hunter”。
-        alive_active_ids = [
-            hid
-            for hid in range(self.num_hunters)
-            if bool(self.active_hunter_mask[hid]) and bool(self.hunters[hid].alive)
-        ]
+        alive_active_ids = [hid for hid in range(self.num_hunters) if bool(self._hunter_alive_for_team_ops(hid))]
         if len(alive_active_ids) == 0:
             return np.zeros(2, dtype=np.float32)
         dist_pairs = []
