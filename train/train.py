@@ -398,17 +398,23 @@ def main(args):
     """
     merged_cfg = load_config(args.config_file)
 
-    # Step 1: 校验算法与RNN策略开关一致性
+    # Step 1: 校验算法档案与后端可用性
     algo_name = str(merged_cfg.exp.algorithm_name)
-    if algo_name == "rmappo":
-        assert merged_cfg.model.use_recurrent_policy or merged_cfg.model.use_naive_recurrent_policy, \
-            "rmappo requires recurrent policy."
-    elif algo_name == "mappo":
-        assert (not merged_cfg.model.use_recurrent_policy) and \
-            (not merged_cfg.model.use_naive_recurrent_policy), \
-            "mappo should disable recurrent policy."
-    else:
-        raise NotImplementedError(f"Unsupported algorithm: {algo_name}")
+    algo_backend = str(getattr(merged_cfg.exp, "algorithm_backend", ""))
+    if algo_backend not in ("r_mappo", "maddpg", "matd3"):
+        raise NotImplementedError(
+            "Unsupported algorithm backend: {} (algorithm_name={})".format(
+                str(algo_backend), str(algo_name)
+            )
+        )
+    if algo_backend == "r_mappo":
+        recurrent_enabled = bool(merged_cfg.model.use_recurrent_policy) or bool(
+            merged_cfg.model.use_naive_recurrent_policy
+        )
+        if str(algo_name) in ("rmappo", "happo") and (not recurrent_enabled):
+            raise ValueError("{} requires recurrent policy enabled by profile.".format(str(algo_name)))
+        if str(algo_name) in ("mappo", "ippo") and recurrent_enabled:
+            raise ValueError("{} requires recurrent policy disabled by profile.".format(str(algo_name)))
 
     # Step 2: 设备与线程设置
     use_cuda = (bool(args.cuda) or bool(merged_cfg.exp.cuda)) and torch.cuda.is_available()

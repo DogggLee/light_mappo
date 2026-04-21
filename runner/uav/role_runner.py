@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
 
 from utils.separated_buffer import SeparatedReplayBuffer
+from utils.offpolicy_buffer import OffPolicyReplayBuffer
 from envs.env_wrappers import DummyVecEnv, EvalDummyVecEnv
 
 
@@ -182,6 +183,9 @@ class RoleBasedRunner(object):
         if self.algorithm_backend == "r_mappo":
             from algorithms.algorithm.r_mappo import RMAPPO as TrainAlgo
             from algorithms.algorithm.rMAPPOPolicy import RMAPPOPolicy as Policy
+        elif self.algorithm_backend in ("maddpg", "matd3"):
+            from algorithms.algorithm.offpolicy_trainer import OffPolicyDeterministicTrainer as TrainAlgo
+            from algorithms.algorithm.offpolicy_policy import OffPolicyDeterministicPolicy as Policy
         else:
             raise NotImplementedError(
                 "Unsupported backend '{}' for algorithm '{}'. "
@@ -257,6 +261,32 @@ class RoleBasedRunner(object):
                     self.envs.observation_space[rep_agent_id],
                     share_obs_space,
                     self.envs.action_space[rep_agent_id],
+                )
+
+        # Step 10: off-policy回放池（按角色维护）
+        self.offpolicy_replay_buffers = {}
+        if self.algorithm_backend in ("maddpg", "matd3"):
+            for role_name, agent_ids in self.role_to_agents.items():
+                if len(agent_ids) == 0:
+                    continue
+                rep_agent_id = int(agent_ids[0])
+                obs_dim = int(self.envs.observation_space[rep_agent_id].shape[0])
+                if self.use_centralized_V:
+                    share_obs_dim = int(self.envs.share_observation_space[rep_agent_id].shape[0])
+                else:
+                    share_obs_dim = int(self.envs.observation_space[rep_agent_id].shape[0])
+                act_dim = int(self.envs.action_space[rep_agent_id].shape[0])
+                if self.algorithm_name == "maddpg":
+                    replay_size = int(self.cfg.maddpg.replay_size)
+                elif self.algorithm_name == "matd3":
+                    replay_size = int(self.cfg.matd3.replay_size)
+                else:
+                    raise ValueError("Unsupported off-policy algorithm_name: {}".format(str(self.algorithm_name)))
+                self.offpolicy_replay_buffers[role_name] = OffPolicyReplayBuffer(
+                    capacity=replay_size,
+                    obs_dim=obs_dim,
+                    share_obs_dim=share_obs_dim,
+                    act_dim=act_dim,
                 )
 
     def _build_flat_args_for_algorithm(self):
@@ -347,6 +377,34 @@ class RoleBasedRunner(object):
         args.use_value_active_masks = self.cfg.ppo.use_value_active_masks
         args.use_policy_active_masks = self.cfg.ppo.use_policy_active_masks
         args.huber_delta = self.cfg.ppo.huber_delta
+
+        # Step 4.1: 写入off-policy算法参数
+        if args.algorithm_name == "maddpg":
+            args.actor_hidden_size = self.cfg.maddpg.actor_hidden_size
+            args.critic_hidden_size = self.cfg.maddpg.critic_hidden_size
+            args.tau = self.cfg.maddpg.tau
+            args.gamma = self.cfg.maddpg.gamma
+            args.batch_size = self.cfg.maddpg.batch_size
+            args.replay_size = self.cfg.maddpg.replay_size
+            args.warmup_steps = self.cfg.maddpg.warmup_steps
+            args.policy_delay = self.cfg.maddpg.policy_delay
+            args.action_noise_std = self.cfg.maddpg.action_noise_std
+            args.target_policy_noise_std = self.cfg.maddpg.target_policy_noise_std
+            args.target_noise_clip = self.cfg.maddpg.target_noise_clip
+            args.train_updates_per_episode = self.cfg.maddpg.train_updates_per_episode
+        elif args.algorithm_name == "matd3":
+            args.actor_hidden_size = self.cfg.matd3.actor_hidden_size
+            args.critic_hidden_size = self.cfg.matd3.critic_hidden_size
+            args.tau = self.cfg.matd3.tau
+            args.gamma = self.cfg.matd3.gamma
+            args.batch_size = self.cfg.matd3.batch_size
+            args.replay_size = self.cfg.matd3.replay_size
+            args.warmup_steps = self.cfg.matd3.warmup_steps
+            args.policy_delay = self.cfg.matd3.policy_delay
+            args.action_noise_std = self.cfg.matd3.action_noise_std
+            args.target_policy_noise_std = self.cfg.matd3.target_policy_noise_std
+            args.target_noise_clip = self.cfg.matd3.target_noise_clip
+            args.train_updates_per_episode = self.cfg.matd3.train_updates_per_episode
 
         # Step 5: 写入调度/日志/评估/渲染参数
         args.use_linear_lr_decay = self.cfg.schedule.use_linear_lr_decay
@@ -1044,6 +1102,13 @@ class RoleBasedRunner(object):
         # Step 3: 写入每个受控agent buffer
         for agent_id in self.controlled_agents:
             done_mask = dones[:, agent_id].astype(bool)
+            obs_prev = np.array(self.buffers[agent_id].obs[self.buffers[agent_id].step], dtype=np.float32)
+            if self.use_centralized_V:
+                share_obs_prev = np.array(
+                    self.buffers[agent_id].share_obs[self.buffers[agent_id].step], dtype=np.float32
+                )
+            else:
+                share_obs_prev = obs_prev.copy()
             rnn_state = rnn_states[agent_id].copy()
             rnn_state_critic = rnn_states_critic[agent_id].copy()
 
@@ -1083,6 +1148,20 @@ class RoleBasedRunner(object):
                 active_masks=active_masks,
             )
 
+            # Step 4: off-policy回放池写入transition
+            if self.algorithm_backend in ("maddpg", "matd3"):
+                role = self.agent_role[agent_id]
+                self.offpolicy_replay_buffers[role].add_batch(
+                    obs=obs_prev,
+                    share_obs=share_obs_prev,
+                    actions=np.array(actions[agent_id], dtype=np.float32),
+                    rewards=np.array(rewards[:, agent_id], dtype=np.float32),
+                    next_obs=np.array(list(obs[:, agent_id]), dtype=np.float32),
+                    next_share_obs=np.array(share_obs, dtype=np.float32),
+                    dones=np.array(dones[:, agent_id : agent_id + 1], dtype=np.float32),
+                    active_masks=np.array(active_masks, dtype=np.float32),
+                )
+
     @torch.no_grad()
     def compute(self):
         """
@@ -1093,6 +1172,9 @@ class RoleBasedRunner(object):
         输出:
             无。
         """
+        if self.algorithm_backend in ("maddpg", "matd3"):
+            return
+
         # Step 1: 对每个受控agent计算GAE returns
         for agent_id in self.controlled_agents:
             role = self.agent_role[agent_id]
@@ -1115,9 +1197,32 @@ class RoleBasedRunner(object):
         输出:
             dict: 训练日志字典。
         """
+        if self.algorithm_backend in ("maddpg", "matd3"):
+            return self._train_offpolicy()
         if self.role_buffer_mode == "role_shared":
             return self._train_with_role_shared_buffers()
         return self._train_with_separate_buffers()
+
+    def _train_offpolicy(self):
+        """
+        功能:
+            执行off-policy训练更新（按角色共享策略更新）。
+        输入:
+            无。
+        输出:
+            dict: 训练日志字典。
+        """
+        train_infos = {}
+        for role_name, trainer in self.role_trainers.items():
+            trainer.prep_training()
+            info = trainer.train(self.offpolicy_replay_buffers[role_name])
+            info["role_num_agents"] = int(len(self.role_to_agents.get(role_name, [])))
+            train_infos[f"{role_name}_offpolicy"] = info
+
+        # off-policy同样推进占位buffer，保证下一轮collect从最新状态开始。
+        for aid in self.controlled_agents:
+            self.buffers[int(aid)].after_update()
+        return train_infos
 
     def _train_with_separate_buffers(self):
         """
@@ -1221,6 +1326,11 @@ class RoleBasedRunner(object):
         for role, trainer in self.role_trainers.items():
             torch.save(trainer.policy.actor.state_dict(), os.path.join(self.save_dir, f"actor_{role}.pt"))
             torch.save(trainer.policy.critic.state_dict(), os.path.join(self.save_dir, f"critic_{role}.pt"))
+            if hasattr(trainer.policy, "critic2") and trainer.policy.critic2 is not None:
+                torch.save(
+                    trainer.policy.critic2.state_dict(),
+                    os.path.join(self.save_dir, f"critic2_{role}.pt"),
+                )
 
     @torch.no_grad()
     def eval(
@@ -3597,6 +3707,8 @@ class RoleBasedRunner(object):
         for role, trainer in self.role_trainers.items():
             torch.save(trainer.policy.actor.state_dict(), str(metric_dir / f"actor_{role}.pt"))
             torch.save(trainer.policy.critic.state_dict(), str(metric_dir / f"critic_{role}.pt"))
+            if hasattr(trainer.policy, "critic2") and trainer.policy.critic2 is not None:
+                torch.save(trainer.policy.critic2.state_dict(), str(metric_dir / f"critic2_{role}.pt"))
 
         # Step 3: 复制本次eval的GIF到最优目录
         for old_gif in metric_dir.glob("e-*-env-*.gif"):
@@ -3715,6 +3827,11 @@ class RoleBasedRunner(object):
             critic_state = torch.load(str(load_dir / f"critic_{role}.pt"), map_location=self.device)
             trainer.policy.actor.load_state_dict(actor_state)
             trainer.policy.critic.load_state_dict(critic_state)
+            if hasattr(trainer.policy, "critic2") and trainer.policy.critic2 is not None:
+                critic2_path = load_dir / f"critic2_{role}.pt"
+                if critic2_path.exists():
+                    critic2_state = torch.load(str(critic2_path), map_location=self.device)
+                    trainer.policy.critic2.load_state_dict(critic2_state)
             trainer.prep_rollout()
         return True
 

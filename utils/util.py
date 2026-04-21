@@ -20,6 +20,42 @@ def _deep_merge(base, override):
     return merged
 
 
+def _apply_algorithm_profile(merged):
+    """
+    功能:
+        根据exp.algorithm_name将defaults中的算法参数组覆盖到通用参数区。
+    输入:
+        merged (dict): defaults与用户yaml已深度合并后的配置。
+    输出:
+        dict: 叠加算法档案后的配置。
+    """
+    exp_cfg = dict(merged.get("exp", {}))
+    if "algorithm_name" not in exp_cfg:
+        raise KeyError("Missing exp.algorithm_name in merged config.")
+    algo_name = str(exp_cfg["algorithm_name"])
+
+    profiles = dict(merged.get("algorithm_profiles", {}))
+    if algo_name not in profiles:
+        raise KeyError(
+            "Unsupported exp.algorithm_name: {}. Available profiles: {}".format(
+                str(algo_name),
+                list(profiles.keys()),
+            )
+        )
+
+    profile = dict(profiles[algo_name])
+    merged_out = dict(merged)
+    if "overrides" in profile:
+        merged_out = _deep_merge(merged_out, dict(profile["overrides"]))
+
+    exp_out = dict(merged_out.get("exp", {}))
+    if "backend" in profile:
+        exp_out["algorithm_backend"] = str(profile["backend"])
+    exp_out["algorithm_profile"] = str(algo_name)
+    merged_out["exp"] = exp_out
+    return merged_out
+
+
 def load_config(path):
     default_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -33,6 +69,7 @@ def load_config(path):
         data = yaml.safe_load(f) or {}
 
     merged = _deep_merge(defaults, data)
+    merged = _apply_algorithm_profile(merged)
     return edict(merged)
 
 def check(input):

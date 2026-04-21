@@ -11,6 +11,94 @@ exp:
   num_env_steps: 1000000
   role_buffer_mode: separate  # Choices: ["separate", "role_shared"]
 
+# Algorithm profile registry:
+# - 通过 exp.algorithm_name 选择档案并自动覆盖通用参数区(model/optim/ppo等)。
+# - 仅在 defaults.yaml 维护默认值；实验yaml只需改 exp.algorithm_name。
+algorithm_profiles:
+  rmappo:
+    backend: r_mappo
+    overrides:
+      model:
+        use_centralized_V: true
+        use_naive_recurrent_policy: false
+        use_recurrent_policy: true
+  mappo:
+    backend: r_mappo
+    overrides:
+      model:
+        use_centralized_V: true
+        use_naive_recurrent_policy: false
+        use_recurrent_policy: false
+  ippo:
+    backend: r_mappo
+    overrides:
+      model:
+        use_centralized_V: false
+        use_naive_recurrent_policy: false
+        use_recurrent_policy: false
+  happo:
+    backend: r_mappo
+    overrides:
+      model:
+        use_centralized_V: true
+        use_naive_recurrent_policy: false
+        use_recurrent_policy: true
+        policy_share: false
+  maddpg:
+    backend: maddpg
+    overrides:
+      model:
+        use_centralized_V: true
+        use_naive_recurrent_policy: false
+        use_recurrent_policy: false
+  matd3:
+    backend: matd3
+    overrides:
+      model:
+        use_centralized_V: true
+        use_naive_recurrent_policy: false
+        use_recurrent_policy: false
+
+# Algorithm-specific hyperparameter groups (default repository scope).
+happo:
+  use_sequential_agent_update: true
+  clip_param: 0.2
+  ppo_epoch: 15
+  num_mini_batch: 1
+
+ippo:
+  clip_param: 0.2
+  ppo_epoch: 15
+  num_mini_batch: 1
+
+maddpg:
+  actor_hidden_size: 256
+  critic_hidden_size: 256
+  tau: 0.01
+  gamma: 0.99
+  batch_size: 1024
+  replay_size: 1000000
+  warmup_steps: 5000
+  policy_delay: 1
+  action_noise_std: 0.1
+  target_policy_noise_std: 0.0
+  target_noise_clip: 0.0
+  train_updates_per_episode: 50
+
+matd3:
+  actor_hidden_size: 256
+  critic_hidden_size: 256
+  tau: 0.005
+  gamma: 0.99
+  batch_size: 1024
+  replay_size: 1000000
+  warmup_steps: 5000
+  policy_delay: 2
+  action_noise_std: 0.1
+  target_policy_noise_std: 0.2
+  target_noise_clip: 0.5
+  train_updates_per_episode: 50
+
 env:
   env_name: seen_hunter_only
   world_size: 100
@@ -236,3 +324,13 @@ domain_randomization:
 # Pretrained model
 pretrained:
   model_dir: null
+
+rule_demo:
+  output_root: results/rule_baselines
+  eval_zone_split: true
+  angelani_chase_weight: 1.0
+  angelani_separation_weight: 0.45
+  angelani_wall_weight: 0.25
+  janosov_radial_weight: 0.08
+  janosov_tangent_weight: 0.9
+  janosov_chase_weight: 0.18
