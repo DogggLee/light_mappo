@@ -14,6 +14,8 @@ env:
   hunters_in_zone: true
   obs_mode: legacy  # Choices: ["legacy", "rel_polar"]
   action_frame: local
+  hunter_collision_state_mode: dead  # Choices: ["dead", "collided"]
+
 
   neighbor_N: 3
   coord_summary_obs_enable: false

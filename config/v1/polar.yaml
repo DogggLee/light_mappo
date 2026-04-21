@@ -1,19 +1,21 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: PolarLoc+Encircle+dis2+colli+spread2
+  experiment_name: PolarLoc+collided+Alone+dis2+colli
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
 
 # Environment settings (common)
 env:
-  env_name: Tech-Ablation
+  env_name: Polar-Loc-Lr-Base-collided-sweep
   world_size: 200
   episode_length: 300 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true
   obs_mode: rel_polar  # Choices: ["legacy", "rel_polar"]
   action_frame: local
+  hunter_collision_state_mode: collided  # Choices: ["dead", "collided"]
+
 
   neighbor_N: 3
   coord_summary_obs_enable: false
@@ -62,13 +64,13 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_enable: true
+  spread_reward_enable: false
   spread_reward_coef: 2.0
 
   # Capture reward
   hunter_capture_reward: 15.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: encircle  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle"]
 
   # Speed Penalty
   speed_penalty: 0.0

@@ -100,6 +100,7 @@ class RoleBasedRunner(object):
         self.recurrent_N = int(self.cfg.model.recurrent_N)
         self.use_centralized_V = bool(self.cfg.model.use_centralized_V)
         self.algorithm_name = str(self.cfg.exp.algorithm_name)
+        self.algorithm_backend = str(getattr(self.cfg.exp, "algorithm_backend", ""))
         self.experiment_name = str(self.cfg.exp.experiment_name)
         self.env_name = str(self.cfg.env.env_name)
         self.role_buffer_mode = str(getattr(self.cfg.exp, "role_buffer_mode", "separate")).lower()
@@ -177,9 +178,17 @@ class RoleBasedRunner(object):
         # Step 4: 仅在算法组件初始化时构建flat args
         self.flat_args = self._build_flat_args_for_algorithm()
 
-        # Step 5: 导入MAPPO算法组件
-        from algorithms.algorithm.r_mappo import RMAPPO as TrainAlgo
-        from algorithms.algorithm.rMAPPOPolicy import RMAPPOPolicy as Policy
+        # Step 5: 基于算法后端导入训练组件
+        if self.algorithm_backend == "r_mappo":
+            from algorithms.algorithm.r_mappo import RMAPPO as TrainAlgo
+            from algorithms.algorithm.rMAPPOPolicy import RMAPPOPolicy as Policy
+        else:
+            raise NotImplementedError(
+                "Unsupported backend '{}' for algorithm '{}'. "
+                "Current repository implements only backend 'r_mappo'.".format(
+                    str(self.algorithm_backend), str(self.algorithm_name)
+                )
+            )
 
         # Step 6: 角色定义与受控智能体集合
         self.agent_role = {aid: "hunter" for aid in range(self.train_max_hunters_num)}
@@ -448,6 +457,8 @@ class RoleBasedRunner(object):
                         if not bool(agent_info.get("active_agent", True)):
                             continue
                         if not bool(agent_info.get("alive", False)):
+                            continue
+                        if bool(agent_info.get("collided", False)):
                             continue
                         spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
                     episode_capture_spread_by_env[env_i] = (
@@ -1632,6 +1643,8 @@ class RoleBasedRunner(object):
                             continue
                         if not bool(agent_info.get("alive", False)):
                             continue
+                        if bool(agent_info.get("collided", False)):
+                            continue
                         spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
                     env_capture_spread_reward[int(idx)] = (
                         float(np.mean(np.asarray(spread_vals, dtype=np.float32)))
@@ -2203,6 +2216,8 @@ class RoleBasedRunner(object):
                     if not bool(agent_info.get("active_agent", True)):
                         continue
                     if not bool(agent_info.get("alive", False)):
+                        continue
+                    if bool(agent_info.get("collided", False)):
                         continue
                     spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
                 capture_spread_reward = (
@@ -2950,18 +2965,19 @@ class RoleBasedRunner(object):
     def _compute_hunter_alive_rate(self, env_infos, max_hunters_num):
         """
         功能:
-            计算单环境hunter存活率（分母为激活hunter数量，而非最大hunter槽位）。
+            计算单环境hunter“非碰撞可用率”（字段名沿用alive_rate）。
+            定义: active_agent=True 且 alive=True 且 collided!=True 的比例。
         输入:
             env_infos (list[dict]): 单环境多智能体info列表。
         输出:
-            float: hunter存活率，范围[0,1]。
+            float: hunter非碰撞可用率，范围[0,1]。
         """
         # Step 1: 空输入直接返回0。
         if env_infos is None or len(env_infos) == 0:
             return 0.0
 
-        # Step 2: 仅统计active_agent=True的hunter，修正分母偏大问题。
-        alive_count = 0.0
+        # Step 2: 仅统计active_agent=True的hunter，分子为alive且未collided的hunter数量。
+        non_collided_count = 0.0
         active_count = 0.0
         for hid in range(int(max_hunters_num)):
             if hid >= len(env_infos):
@@ -2972,11 +2988,11 @@ class RoleBasedRunner(object):
             if not bool(agent_info.get("active_agent", True)):
                 continue
             active_count += 1.0
-            if bool(agent_info.get("alive", False)):
-                alive_count += 1.0
+            if bool(agent_info.get("alive", False)) and (not bool(agent_info.get("collided", False))):
+                non_collided_count += 1.0
         if active_count <= 0.0:
             return 0.0
-        return float(alive_count / active_count)
+        return float(non_collided_count / active_count)
 
     def _build_eval_metrics_by_hunter_count(
         self,
@@ -3703,7 +3719,9 @@ class RoleBasedRunner(object):
         return True
 
     @torch.no_grad()
-    def _final_eval_saved_best_models(self, total_num_steps, episode, model_glob=None, save_gifs=False):
+    def _final_eval_saved_best_models(self, total_num_steps, episode, model_glob=None, 
+                                      save_gifs=False,
+                                      save_pngs=False):
         """
         功能:
             训练完成后重载models下可用模型目录，并对可用评估桶执行最终串行评估与GIF保存。
@@ -3759,7 +3777,7 @@ class RoleBasedRunner(object):
                     eval_envs=self.eval_envs_zone_false,
                     bucket="fixed_zone_false",
                     save_gifs=save_gifs,
-                    save_pngs=True,
+                    save_pngs=save_pngs,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
@@ -3769,7 +3787,7 @@ class RoleBasedRunner(object):
                     eval_envs=self.eval_envs_zone_true,
                     bucket="fixed_zone_true",
                     save_gifs=save_gifs,
-                    save_pngs=True,
+                    save_pngs=save_pngs,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
@@ -3783,7 +3801,7 @@ class RoleBasedRunner(object):
                         eval_envs=self.eval_envs_target_learn_zone_false,
                         bucket="target_learn_zone_false",
                         save_gifs=save_gifs,
-                        save_pngs=True,
+                        save_pngs=save_pngs,
                         record_logs=False,
                         gif_output_dir=res_dir,
                     )
@@ -3793,7 +3811,7 @@ class RoleBasedRunner(object):
                         eval_envs=self.eval_envs_target_learn_zone_true,
                         bucket="target_learn_zone_true",
                         save_gifs=save_gifs,
-                        save_pngs=True,
+                        save_pngs=save_pngs,
                         record_logs=False,
                         gif_output_dir=res_dir,
                     )
@@ -3804,7 +3822,7 @@ class RoleBasedRunner(object):
                     eval_envs=self.eval_envs,
                     bucket="fixed",
                     save_gifs=save_gifs,
-                    save_pngs=True,
+                    save_pngs=save_pngs,
                     record_logs=False,
                     gif_output_dir=res_dir,
                 )
@@ -3815,7 +3833,7 @@ class RoleBasedRunner(object):
                         eval_envs=self.eval_envs_target_learn,
                         bucket="target_learn",
                         save_gifs=save_gifs,
-                        save_pngs=True,
+                        save_pngs=save_pngs,
                         record_logs=False,
                         gif_output_dir=res_dir,
                     )
