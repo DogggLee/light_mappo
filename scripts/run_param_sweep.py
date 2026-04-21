@@ -4,6 +4,7 @@ Run parameter sweep experiments for Multi-UAV Pursuit training.
 Example sweep YAML:
 
 base_config: config/v1/base.yaml
+exp_name: base_ablation
 output_dir: results/sweeps/base_ablation
 max_parallel: 2
 python: python
@@ -24,6 +25,19 @@ parameters:
   domain_randomization.train_split.enable:
     values: [false, true]
 
+auto_reduce_redundant_by_base_reward_mode: true
+# 或者使用通用条件规则（支持*前缀通配）
+# conditional_ignore:
+#   - when:
+#       reward.base_reward_mode: legacy
+#     ignore:
+#       - reward.base_delta_*
+#   - when:
+#       reward.base_reward_mode: delta_window
+#     ignore:
+#       - reward.base_far_scale
+#       - reward.base_near_scale
+#
 plot:
   enabled: true
   buckets: [fixed_zone_false, fixed_zone_true]
@@ -56,14 +70,23 @@ ALIASES = {
 }
 
 NAME_ALIASES = {
-    "env.action_frame": "action_frame",
-    "reward.base_reward_mode": "base_reward_mode",
-    "reward.mi_diversity_enable": "mi_diversity",
-    "reward.speed_penalty": "speed_penalty",
-    "reward.spread_reward_enable": "spread_reward",
+    "env.action_frame": "acF",
+    "env.hunter_collision_state_mode": "colli",
+    
+    "reward.base_reward_mode": "base",
+
+    "reward.mi_diversity_enable": "mi",
+
+    "reward.speed_penalty": "spdPe",
+
+    "reward.spread_reward_enable": "spread",
+    "reward.spread_reward_coef": "sprC",
+
     "optim.lr": "lr",
-    "schedule.use_linear_lr_decay": "linear_lr_decay",
-    "domain_randomization.train_split.enable": "domain_rand",
+
+    "schedule.use_linear_lr_decay": "lrDec",
+    
+    "domain_randomization.train_split.enable": "dyEnv",
 }
 
 
@@ -130,6 +153,30 @@ def _set_by_path(data, path, value):
     if last not in cur:
         raise KeyError("Config key does not exist: {}".format(str(path)))
     cur[last] = value
+
+
+def _set_by_path_if_exists(data, path, value):
+    """
+    功能:
+        当点号路径存在时写入值；不存在时跳过。
+    输入:
+        data (dict): 待修改配置。
+        path (str): 点号分隔路径。
+        value (object): 新参数值。
+    输出:
+        bool: True表示成功写入，False表示路径不存在。
+    """
+    keys = str(path).split(".")
+    cur = data
+    for key in keys[:-1]:
+        if key not in cur or not isinstance(cur[key], dict):
+            return False
+        cur = cur[key]
+    last = keys[-1]
+    if last not in cur:
+        return False
+    cur[last] = value
+    return True
 
 
 def _expand_values(spec):
@@ -256,6 +303,93 @@ def _build_combinations(parameters):
     return combos
 
 
+def _normalize_conditional_ignore_rules(sweep_cfg):
+    """
+    功能:
+        规范化条件忽略规则，并按配置拼接内置冗余规则。
+    输入:
+        sweep_cfg (dict): sweep配置。
+    输出:
+        list[dict]: 规则列表，每条含when/ignore。
+    """
+    rules = []
+    user_rules = list(sweep_cfg.get("conditional_ignore", []))
+    for rule in user_rules:
+        if not isinstance(rule, dict):
+            raise ValueError("Each conditional_ignore rule must be a dict.")
+        when = dict(rule.get("when", {}))
+        ignore = list(rule.get("ignore", []))
+        if len(when) == 0 or len(ignore) == 0:
+            raise ValueError("Each conditional_ignore rule requires non-empty 'when' and 'ignore'.")
+        rules.append(
+            {
+                "when": { _canonical_param_path(k): v for k, v in when.items() },
+                "ignore": [ _canonical_param_path(x) for x in ignore ],
+            }
+        )
+
+    if bool(sweep_cfg.get("auto_reduce_redundant_by_base_reward_mode", False)):
+        rules.extend(
+            [
+                {
+                    "when": {"reward.base_reward_mode": "legacy"},
+                    "ignore": ["reward.base_delta_*"],
+                },
+                {
+                    "when": {"reward.base_reward_mode": "delta_window"},
+                    "ignore": ["reward.base_far_scale", "reward.base_near_scale"],
+                },
+            ]
+        )
+    return rules
+
+
+def _prune_redundant_combinations(combos, rules):
+    """
+    功能:
+        根据条件忽略规则裁剪冗余参数组合，并去重。
+    输入:
+        combos (list[list[tuple[str, object]]]): 原始笛卡尔积参数组合。
+        rules (list[dict]): 条件忽略规则。
+    输出:
+        list[list[tuple[str, object]]]: 裁剪去重后的组合。
+    """
+    if len(rules) == 0:
+        return combos
+
+    unique = {}
+    for combo in combos:
+        combo_map = {str(k): v for k, v in combo}
+        effective = dict(combo_map)
+
+        for rule in rules:
+            cond = dict(rule["when"])
+            matched = True
+            for key, expected in cond.items():
+                if key not in combo_map or combo_map[key] != expected:
+                    matched = False
+                    break
+            if not matched:
+                continue
+
+            for ignore_key in list(rule["ignore"]):
+                ig = str(ignore_key)
+                if ig.endswith("*"):
+                    prefix = ig[:-1]
+                    for k in list(effective.keys()):
+                        if str(k).startswith(prefix):
+                            effective.pop(k, None)
+                else:
+                    effective.pop(ig, None)
+
+        eff_items = sorted(effective.items(), key=lambda x: str(x[0]))
+        key = tuple((k, json.dumps(v, ensure_ascii=False, sort_keys=True)) for k, v in eff_items)
+        if key not in unique:
+            unique[key] = [(k, v) for k, v in eff_items]
+
+    return list(unique.values())
+
+
 def _prepare_experiments(sweep_cfg, sweep_path):
     """
     功能:
@@ -280,11 +414,18 @@ def _prepare_experiments(sweep_cfg, sweep_path):
     configs_dir.mkdir(parents=True, exist_ok=True)
 
     combos = _build_combinations(dict(sweep_cfg.get("parameters", {})))
+    conditional_rules = _normalize_conditional_ignore_rules(sweep_cfg)
+    combos = _prune_redundant_combinations(combos, conditional_rules)
+    fixed_exp_prefix = sweep_cfg.get("env_name", None)
     manifest = []
+    
     for idx, combo in enumerate(combos):
         cfg_i = json.loads(json.dumps(base_cfg))
-        exp_name = _build_experiment_name(combo)
+        combo_name = _build_experiment_name(combo)
+        exp_name = combo_name
         _set_by_path(cfg_i, "exp.experiment_name", exp_name)
+        if fixed_exp_prefix is not None:
+            _set_by_path_if_exists(cfg_i, "env.env_name", str(fixed_exp_prefix))
         for path, value in combo:
             _set_by_path(cfg_i, path, value)
         cfg_path = configs_dir / "exp_{:04d}.yaml".format(idx)
@@ -298,6 +439,9 @@ def _prepare_experiments(sweep_cfg, sweep_path):
                 "status": "pending",
                 "returncode": None,
                 "run_dir": "",
+                "start_time": None,
+                "end_time": None,
+                "duration_sec": None,
             }
         )
 
@@ -390,11 +534,266 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
     py_bin = str(sweep_cfg.get("python", "python"))
     train_script = str(sweep_cfg.get("train_script", "train/train.py"))
     time_stat = bool(sweep_cfg.get("time_stat", False))
+    progress_interval_sec = float(sweep_cfg.get("progress_interval_sec", 20.0))
+    progress_topk = int(sweep_cfg.get("progress_topk", 5))
     logs_dir = output_dir / "launcher_logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
+    def _tail_file_lines(path, n_lines):
+        """
+        功能:
+            读取文件末尾若干行文本。
+        输入:
+            path (str): 文件路径。
+            n_lines (int): 末尾行数。
+        输出:
+            list[str]: 末尾行列表；异常时返回空列表。
+        """
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            return [str(x).rstrip("\n") for x in lines[-int(n_lines):]]
+        except Exception:
+            return []
+
+    def _parse_float(row, key):
+        """
+        功能:
+            从CSV行中解析指定字段为float。
+        输入:
+            row (dict): CSV行。
+            key (str): 字段名。
+        输出:
+            float | None: 成功返回数值，失败返回None。
+        """
+        if key not in row:
+            return None
+        text = str(row.get(key, "")).strip()
+        if text == "":
+            return None
+        try:
+            return float(text)
+        except Exception:
+            return None
+
+    def _read_run_progress(run_dir):
+        """
+        功能:
+            读取单个run目录当前训练进度与最优捕获指标。
+        输入:
+            run_dir (str): run目录。
+        输出:
+            dict: 包含episode, best_capture_rate, best_capture_steps, best_alive_rate。
+        """
+        out = {
+            "episode": None,
+            "best_capture_rate": None,
+            "best_capture_steps": None,
+            "best_alive_rate": None,
+        }
+        if not run_dir:
+            return out
+
+        run_path = Path(str(run_dir))
+        eval_path = run_path / "eval.csv"
+        log_path = run_path / "log.csv"
+
+        # 优先从eval.csv读取capture指标，并计算当前最大episode。
+        if eval_path.exists():
+            try:
+                with open(eval_path, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    best_rate = None
+                    best_steps = None
+                    best_alive = None
+                    for row in reader:
+                        ep = _parse_float(row, "episode")
+                        if ep is not None and (out["episode"] is None or ep > out["episode"]):
+                            out["episode"] = ep
+
+                        cap_rate = _parse_float(row, "capture_rate")
+                        cap_steps = _parse_float(row, "capture_steps")
+                        alive_rate = _parse_float(row, "alive_rate")
+                        if cap_rate is None:
+                            continue
+                        if best_rate is None or cap_rate > best_rate:
+                            best_rate = cap_rate
+                            best_steps = cap_steps
+                            best_alive = alive_rate
+                        elif cap_rate == best_rate:
+                            # capture_rate并列时，优先更小capture_steps。
+                            if cap_steps is not None and (best_steps is None or cap_steps < best_steps):
+                                best_steps = cap_steps
+                                best_alive = alive_rate
+                            elif cap_steps == best_steps:
+                                # capture_rate与capture_steps都并列时，优先更大alive_rate。
+                                if alive_rate is not None and (best_alive is None or alive_rate > best_alive):
+                                    best_alive = alive_rate
+                    out["best_capture_rate"] = best_rate
+                    out["best_capture_steps"] = best_steps
+                    out["best_alive_rate"] = best_alive
+            except Exception:
+                pass
+
+        # 若eval.csv尚未产生有效episode，则回退到log.csv。
+        if out["episode"] is None and log_path.exists():
+            try:
+                with open(log_path, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    max_ep = None
+                    for row in reader:
+                        ep = _parse_float(row, "episode")
+                        if ep is not None and (max_ep is None or ep > max_ep):
+                            max_ep = ep
+                    out["episode"] = max_ep
+            except Exception:
+                pass
+        return out
+
+    def _print_progress():
+        """
+        功能:
+            打印当前sweep进度、失败数量与ETA估计。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        total = len(manifest)
+        done = 0
+        failed = 0
+        running_cnt = 0
+        pending_cnt = 0
+        durations = []
+        for exp_item in manifest:
+            st = str(exp_item.get("status", "pending"))
+            if st == "done":
+                done += 1
+                dur = exp_item.get("duration_sec", None)
+                if isinstance(dur, (int, float)):
+                    durations.append(float(dur))
+            elif st == "failed":
+                failed += 1
+                dur = exp_item.get("duration_sec", None)
+                if isinstance(dur, (int, float)):
+                    durations.append(float(dur))
+            elif st == "running":
+                running_cnt += 1
+            else:
+                pending_cnt += 1
+
+        eta_text = "N/A"
+        if len(durations) > 0 and max_parallel > 0:
+            mean_dur = sum(durations) / float(len(durations))
+            eta_sec = (pending_cnt / float(max_parallel)) * mean_dur
+            eta_text = "{:.1f} min".format(eta_sec / 60.0)
+        print(
+            "[Sweep][Progress] total={}, done={}, failed={}, running={}, pending={}, eta={}".format(
+                int(total), int(done), int(failed), int(running_cnt), int(pending_cnt), eta_text
+            )
+        )
+
+        # 汇总当前实验进度，并构建全局TopK候选。
+        scored_items = []
+        for exp_item in manifest:
+            st = str(exp_item.get("status", "pending"))
+            if st not in ("running", "done", "failed"):
+                continue
+            run_dir = str(exp_item.get("run_dir", ""))
+            if run_dir == "":
+                run_dir = _latest_run_dir(exp_item["config_path"])
+                if run_dir != "":
+                    exp_item["run_dir"] = str(run_dir)
+            prog = _read_run_progress(run_dir)
+            rate = prog.get("best_capture_rate", None)
+            steps = prog.get("best_capture_steps", None)
+            alive = prog.get("best_alive_rate", None)
+            if rate is None:
+                continue
+            steps_sort = float("inf") if steps is None else float(steps)
+            alive_sort = float("-inf") if alive is None else float(alive)
+            scored_items.append(
+                {
+                    "id": int(exp_item.get("id", -1)),
+                    "experiment_name": str(exp_item.get("experiment_name", "")),
+                    "capture_rate": float(rate),
+                    "capture_steps": None if steps is None else float(steps),
+                    "alive_rate": None if alive is None else float(alive),
+                    "sort_key": (-float(rate), steps_sort, -alive_sort),
+                }
+            )
+
+        scored_items = sorted(scored_items, key=lambda x: x["sort_key"])
+        if len(scored_items) > 0:
+            best = scored_items[0]
+            best_steps_text = "NA" if best["capture_steps"] is None else "{:.2f}".format(float(best["capture_steps"]))
+            best_alive_text = "NA" if best["alive_rate"] is None else "{:.4f}".format(float(best["alive_rate"]))
+            print(
+                "[Sweep][GlobalBest] exp_{:04d} name={} best_capture_rate={:.4f} best_capture_steps={} best_alive_rate={}".format(
+                    int(best["id"]),
+                    str(best["experiment_name"]),
+                    float(best["capture_rate"]),
+                    str(best_steps_text),
+                    str(best_alive_text),
+                )
+            )
+            topn = min(max(int(progress_topk), 1), len(scored_items))
+            for rank, cand in enumerate(scored_items[:topn], start=1):
+                cand_steps_text = "NA" if cand["capture_steps"] is None else "{:.2f}".format(float(cand["capture_steps"]))
+                cand_alive_text = "NA" if cand["alive_rate"] is None else "{:.4f}".format(float(cand["alive_rate"]))
+                print(
+                    "[Sweep][TopK] rank={} exp_{:04d} capture_rate={:.4f} capture_steps={} alive_rate={} name={}".format(
+                        int(rank),
+                        int(cand["id"]),
+                        float(cand["capture_rate"]),
+                        str(cand_steps_text),
+                        str(cand_alive_text),
+                        str(cand["experiment_name"]),
+                    )
+                )
+        else:
+            print("[Sweep][GlobalBest] exp_NA name=NA best_capture_rate=NA best_capture_steps=NA best_alive_rate=NA")
+        if failed > 0:
+            failed_items = [x for x in manifest if str(x.get("status", "")) == "failed"]
+            for exp_item in failed_items[:10]:
+                print(
+                    "[Sweep][Failed] exp_{:04d} returncode={} log={}".format(
+                        int(exp_item["id"]),
+                        int(exp_item.get("returncode", -1)),
+                        str(exp_item.get("launcher_log", "")),
+                    )
+                )
+        for exp_item in manifest:
+            if str(exp_item.get("status", "")) != "running":
+                continue
+            run_dir = str(exp_item.get("run_dir", ""))
+            if run_dir == "":
+                run_dir = _latest_run_dir(exp_item["config_path"])
+                if run_dir != "":
+                    exp_item["run_dir"] = str(run_dir)
+            prog = _read_run_progress(run_dir)
+            ep = prog["episode"]
+            best_rate = prog["best_capture_rate"]
+            best_steps = prog["best_capture_steps"]
+            best_alive = prog["best_alive_rate"]
+            ep_text = "NA" if ep is None else str(int(ep)) if abs(ep - int(ep)) <= 1e-9 else "{:.2f}".format(ep)
+            rate_text = "NA" if best_rate is None else "{:.4f}".format(float(best_rate))
+            steps_text = "NA" if best_steps is None else "{:.2f}".format(float(best_steps))
+            alive_text = "NA" if best_alive is None else "{:.4f}".format(float(best_alive))
+            print(
+                "[Sweep][Running] exp_{:04d} episode={} best_capture_rate={} best_capture_steps={} best_alive_rate={} run_dir={}".format(
+                    int(exp_item["id"]),
+                    ep_text,
+                    rate_text,
+                    steps_text,
+                    alive_text,
+                    str(exp_item.get("run_dir", "")),
+                )
+            )
+
     pending = list(manifest)
     running = []
+    last_progress_ts = 0.0
     while len(pending) > 0 or len(running) > 0:
         while len(pending) > 0 and len(running) < max_parallel:
             item = pending.pop(0)
@@ -411,6 +810,7 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
                 text=True,
             )
             item["status"] = "running"
+            item["start_time"] = float(time.time())
             item["launcher_log"] = str(log_path)
             running.append({"item": item, "proc": proc, "log_f": log_f})
             print("[Sweep] started exp_{:04d}: {}".format(int(item["id"]), item["experiment_name"]))
@@ -424,6 +824,9 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
                 continue
             slot["log_f"].close()
             item = slot["item"]
+            item["end_time"] = float(time.time())
+            if isinstance(item.get("start_time", None), (int, float)):
+                item["duration_sec"] = float(item["end_time"] - item["start_time"])
             item["returncode"] = int(ret)
             item["status"] = "done" if int(ret) == 0 else "failed"
             item["run_dir"] = _latest_run_dir(item["config_path"])
@@ -435,10 +838,21 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
                     str(item["run_dir"]),
                 )
             )
+            if item["status"] == "failed":
+                tail_lines = _tail_file_lines(item.get("launcher_log", ""), 20)
+                if len(tail_lines) > 0:
+                    print("[Sweep][FailedSummary] exp_{:04d} log tail (last 20 lines):".format(int(item["id"])))
+                    for line in tail_lines:
+                        print("[Sweep][FailedSummary] {}".format(str(line)))
         running = still_running
         _write_manifest(output_dir, manifest)
+        now_ts = float(time.time())
+        if (now_ts - last_progress_ts) >= progress_interval_sec:
+            _print_progress()
+            last_progress_ts = now_ts
         if len(pending) > 0 or len(running) > 0:
             time.sleep(5.0)
+    _print_progress()
     _write_manifest(output_dir, manifest)
     return manifest
 
