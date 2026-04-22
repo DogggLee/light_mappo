@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Curriculum-spread
+  experiment_name: Curriculum-close-spread
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -74,7 +74,7 @@ reward:
   # Capture reward
   hunter_capture_reward: 150.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle"]
+  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle", "spread"]
 
   # Speed Penalty
   speed_penalty: 0.2
@@ -123,7 +123,7 @@ domain_randomization:
     patrol_name_choices: ["all"]
 
 curriculum:
-  enable: true
+  enable: false
   stages:
     - name: warmup_small_map
       start_ratio: 0.0

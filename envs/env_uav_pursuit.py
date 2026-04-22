@@ -1480,14 +1480,12 @@ class UAVPursuitEnv(object):
         self.spread_reward_coef = float(reward_cfg.spread_reward_coef)
         self.hunter_capture_reward = float(reward_cfg.hunter_capture_reward)
         self.target_captured_penalty = float(reward_cfg.target_captured_penalty)
-        capture_reward_allocation = str(
-            getattr(reward_cfg, "capture_reward_allocation", "team")
-        ).lower()
+        capture_reward_allocation = str(reward_cfg.capture_reward_allocation).lower()
         if capture_reward_allocation == "naive":
             capture_reward_allocation = "team"
-        if capture_reward_allocation not in ("team", "alone", "encircle"):
+        if capture_reward_allocation not in ("team", "alone", "encircle", "spread"):
             raise ValueError(
-                "Unsupported reward.capture_reward_allocation: {} (choices: team, alone, encircle)".format(
+                "Unsupported reward.capture_reward_allocation: {} (choices: team, alone, encircle, spread)".format(
                     str(capture_reward_allocation)
                 )
             )
@@ -3230,6 +3228,49 @@ class UAVPursuitEnv(object):
         elif mode == "alone":
             for hid in captor_ids:
                 capture_reward[int(hid)] = float(self.hunter_capture_reward)
+        elif mode == "spread":
+            eligible_ids = []
+            for hid in range(self.num_hunters):
+                if not bool(self._hunter_alive_for_team_ops(hid)):
+                    continue
+                eligible_ids.append(int(hid))
+            if len(eligible_ids) > 0:
+                target_pos = np.asarray(self.target.position, dtype=np.float32)
+                ref_vec = np.zeros(2, dtype=np.float32)
+                for hid in captor_ids:
+                    diff = target_pos - np.asarray(self.hunters[int(hid)].position, dtype=np.float32)
+                    norm = float(np.linalg.norm(diff))
+                    if norm > 1e-6:
+                        ref_vec = ref_vec + (diff / norm).astype(np.float32)
+                ref_norm = float(np.linalg.norm(ref_vec))
+                if ref_norm <= 1e-6:
+                    ref_vec = np.asarray([1.0, 0.0], dtype=np.float32)
+                else:
+                    ref_vec = (ref_vec / ref_norm).astype(np.float32)
+
+                raw_scores = []
+                for hid in eligible_ids:
+                    diff = target_pos - np.asarray(self.hunters[int(hid)].position, dtype=np.float32)
+                    norm = float(np.linalg.norm(diff))
+                    if norm <= 1e-6:
+                        raw_scores.append(0.0)
+                        continue
+                    hunter_dir = (diff / norm).astype(np.float32)
+                    dot_val = float(np.clip(float(np.dot(hunter_dir, ref_vec)), -1.0, 1.0))
+                    raw_scores.append(max(0.0, 1.0 - dot_val))
+                raw_scores = np.asarray(raw_scores, dtype=np.float32)
+                score_sum = float(np.sum(raw_scores))
+                if score_sum <= 1e-8:
+                    weights = np.ones(len(eligible_ids), dtype=np.float32) / float(len(eligible_ids))
+                else:
+                    weights = raw_scores / score_sum
+
+                if bool(self.hunter_count_balance_enable):
+                    total_pool = float(self.hunter_capture_reward) * float(self.hunter_count_balance_ref_hunters)
+                else:
+                    total_pool = float(self.hunter_capture_reward) * float(len(eligible_ids))
+                for idx, hid in enumerate(eligible_ids):
+                    capture_reward[int(hid)] = float(total_pool) * float(weights[idx])
         else:
             for hid in captor_ids:
                 capture_reward[int(hid)] = float(self.hunter_capture_reward)
@@ -3312,6 +3353,28 @@ class UAVPursuitEnv(object):
             return False
         hunter = self.hunters[idx]
         return bool(hunter.alive) and (not bool(hunter.collided))
+
+    def _get_prepare_capture_hunter_ids(self):
+        """
+        功能:
+            获取当前步进入capture_dis范围的预备抓捕Hunter集合。
+        输入:
+            无。
+        输出:
+            list[int]: 满足active且alive且未collided且d<=capture_dis的Hunter索引。
+        """
+        target_pos = np.asarray(self.target.position, dtype=np.float32)
+        capture_dis_safe = max(float(self.capture_dis), 1e-6)
+        prepare_ids = []
+        for hid in range(self.num_hunters):
+            if not bool(self._hunter_alive_for_team_ops(hid)):
+                continue
+            dist = float(
+                np.linalg.norm(np.asarray(self.hunters[int(hid)].position, dtype=np.float32) - target_pos)
+            )
+            if dist <= capture_dis_safe:
+                prepare_ids.append(int(hid))
+        return prepare_ids
 
     def _count_active_alive_hunters(self) -> int:
         """
@@ -3818,6 +3881,32 @@ class UAVPursuitEnv(object):
             speed_norm = float(np.linalg.norm(a.velocity)) / vmax
             speed_penalty_vals.append(speed_norm)
         speed_penalty_reward = -self.speed_penalty * (1 + np.asarray(speed_penalty_vals, dtype=np.float32))
+
+        # Step 3.1: 进入预备抓捕阶段后，Hunter分轨奖励。
+        # - 所有Hunter关闭base reward；
+        # - 仅预备抓捕Hunter保留streak reward；
+        # - 预备抓捕Hunter仅保留streak/spread/collision三类奖励。
+        if not bool(captured):
+            prepare_ids = self._get_prepare_capture_hunter_ids()
+            if len(prepare_ids) > 0:
+                prepare_set = set(int(hid) for hid in prepare_ids)
+                for hid in range(self.num_hunters):
+                    if not bool(self._hunter_alive_for_team_ops(hid)):
+                        continue
+                    hunter_base_reward[int(hid)] = 0.0
+                    if int(hid) not in prepare_set:
+                        hunter_streak_reward[int(hid)] = 0.0
+                    else:
+                        escape_gap_reward[int(hid)] = 0.0
+                        escape_gap_hunter_reward[int(hid)] = 0.0
+                        escape_gap_encircle_reward[int(hid)] = 0.0
+                        escape_gap_intercept_reward[int(hid)] = 0.0
+                        escape_gap_encircle_hunter_reward[int(hid)] = 0.0
+                        escape_gap_intercept_hunter_reward[int(hid)] = 0.0
+                        diversity_reward[int(hid)] = 0.0
+                        diversity_mi_reward[int(hid)] = 0.0
+                        diversity_traj_reward[int(hid)] = 0.0
+                        speed_penalty_reward[int(hid)] = 0.0
 
         # Step 4: 聚合总奖励与子项
         total = (
