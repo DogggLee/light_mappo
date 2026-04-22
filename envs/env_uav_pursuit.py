@@ -2720,6 +2720,9 @@ class UAVPursuitEnv(object):
             if not bool(self.active_hunter_mask[hid]):
                 continue
             h_color = hunter_colors[hid % len(hunter_colors)]
+            hunter_label = f"Hunter-{hid}"
+            if bool(self.hunters[hid].collided):
+                hunter_label = f"{hunter_label}-colli"
             legend_handles.append(
                 Line2D(
                     [0],
@@ -2729,7 +2732,7 @@ class UAVPursuitEnv(object):
                     markerfacecolor=h_color,
                     markeredgecolor="black",
                     markersize=7,
-                    label=f"Hunter-{hid}",
+                    label=hunter_label,
                 )
             )
         target_policy_type = str(self.target.policy_type).lower()
@@ -2914,13 +2917,16 @@ class UAVPursuitEnv(object):
         for i in range(self.num_hunters):
             if not bool(self.active_hunter_mask[i]):
                 continue
-            if (not bool(agents[i].alive)) or bool(getattr(agents[i], "collided", False)): # 已失活或已碰撞Agent不重新处理碰撞
+            if bool(agents[i].collided):
+                collision_rewards[i] -= float(self.collision_penalty_k)
+                continue
+            if not bool(agents[i].alive): # 已失活Agent不重新处理碰撞
                 continue
 
             for j in range(i + 1, self.num_hunters):
                 if not bool(self.active_hunter_mask[j]):
                     continue
-                if (not bool(agents[j].alive)) or bool(getattr(agents[j], "collided", False)): # 已失活或已碰撞Agent不重新处理碰撞
+                if bool(agents[j].collided) or (not bool(agents[j].alive)): # 已碰撞或已失活Agent不重新处理碰撞
                     continue
 
                 dist = float(np.linalg.norm(agents[i].position - agents[j].position))

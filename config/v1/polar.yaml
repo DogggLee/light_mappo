@@ -63,9 +63,9 @@ reward:
   base_delta_norm_scale: 20.0
 
   # inter-information MI
-  mi_diversity_enable: true
+  mi_diversity_enable: false
   mi_diversity_coef: 2.0
-  traj_diversity_enable: true
+  traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
   spread_reward_enable: false
@@ -116,7 +116,7 @@ domain_randomization:
     enable: false
     regen_interval_episode: 20
     regen_prob: 1.0
-    hunter_count_choices: [1, 2, 3]
+    hunter_count_choices: [1, 3, 5, 8]
     seed_range: [1, 99999]
     hunters_in_zone_choices: [false,true]
     target_policy_choices: ["patrol", "random", "escape"]

@@ -118,8 +118,8 @@ env:
   coord_summary_obs_enable: true
   coord_topk_hunters: 3
 
-  capture_dis: 20
-  capture_step: 20
+  capture_dis: 30
+  capture_step: 10
 
   collision_dis: 3
   hunter_collision_state_mode: dead  # Choices: ["dead", "collided"]
@@ -161,11 +161,11 @@ Explorer:
 
 Target: 
   perception_radius: -1
-  max_velo: 8
+  max_velo: 25
   safe_dis: 15
   control_mode: velocity
   max_acc: 2
-  max_turn_angle: 15
+  max_turn_angle: -1
   min_turn_limit_velo: 3.0
 
 reward:
