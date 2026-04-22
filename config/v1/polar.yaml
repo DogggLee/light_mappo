@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Curriculum
+  experiment_name: Curriculum-spread
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -68,7 +68,7 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_enable: false
+  spread_reward_enable: true
   spread_reward_coef: 2.0
 
   # Capture reward
