@@ -76,6 +76,7 @@ NAME_ALIASES = {
     "reward.base_reward_mode": "base",
 
     "reward.mi_diversity_enable": "mi",
+    "reward.mi_diversity_coef": "miC",
 
     "reward.speed_penalty": "spdPe",
 
@@ -87,6 +88,7 @@ NAME_ALIASES = {
     "schedule.use_linear_lr_decay": "lrDec",
     
     "domain_randomization.train_split.enable": "dyEnv",
+    "curriculum.enable": "curriculum"
 }
 
 
@@ -267,6 +269,7 @@ def _build_experiment_name(combo):
         str: 形如param-value + param-value的实验名。
     """
     parts = []
+    # breakpoint()
     for path, value in combo:
         safe_path = NAME_ALIASES.get(str(path), str(path).split(".")[-1])
         safe_path = str(safe_path).replace("/", "_").replace("\\", "_")
