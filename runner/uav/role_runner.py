@@ -862,11 +862,11 @@ class RoleBasedRunner(object):
                         )
                         break
 
-        # Step 4: 训练完成后，重载所有最优模型并执行最终评估。
-        if bool(bad_stop_early_stopped):
-            print("[BadStop] skip _final_eval_saved_best_models due to early stop.")
-        else:
-            self._final_eval_saved_best_models(total_num_steps=int(total_num_steps), episode=int(episodes - 1))
+        # # Step 4: 训练完成后，重载所有最优模型并执行最终评估。
+        # if bool(bad_stop_early_stopped):
+        #     print("[BadStop] skip _final_eval_saved_best_models due to early stop.")
+        # else:
+        #     self._final_eval_saved_best_models(total_num_steps=int(total_num_steps), episode=int(episodes - 1))
 
     def run_time_stat(self):
         """
