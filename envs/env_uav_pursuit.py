@@ -1587,6 +1587,19 @@ class UAVPursuitEnv(object):
             dtype=np.float32,
         )
         self._human_render_fig = None
+        self._step_cache = {
+            "positions": np.zeros((self.agent_num, 2), dtype=np.float32),
+            "velocities": np.zeros((self.agent_num, 2), dtype=np.float32),
+            "headings": np.zeros((self.agent_num, 2), dtype=np.float32),
+            "pair_rel": np.zeros((self.agent_num, self.agent_num, 2), dtype=np.float32),
+            "pair_dist": np.zeros((self.agent_num, self.agent_num), dtype=np.float32),
+            "hunter_valid_mask": np.zeros(self.num_hunters, dtype=bool),
+            "hunter_to_target_rel": np.zeros((self.num_hunters, 2), dtype=np.float32),
+            "hunter_to_target_dist": np.zeros(self.num_hunters, dtype=np.float32),
+            "hunter_to_target_unit": np.zeros((self.num_hunters, 2), dtype=np.float32),
+            "speed_norm": np.zeros(self.agent_num, dtype=np.float32),
+        }
+        self._step_cache_valid = False
 
         # 步骤4：初始化Agent对象
         patrol_routes = self._load_patrol_routes(
@@ -1823,6 +1836,7 @@ class UAVPursuitEnv(object):
         self.last_mi_diversity_score_mean = 0.0
         self.last_traj_diversity_score_mean = 0.0
         self.last_spread_score_mean = 0.0
+        self._step_cache_valid = False
 
         # 步骤2：按给定位置初始化所有agent
         if init_positions.shape != (self.agent_num, 2):
@@ -1854,6 +1868,80 @@ class UAVPursuitEnv(object):
 
         # 步骤3：返回初始观测
         return self._build_obs(team_sees_target=False)
+
+    def _prepare_step_cache(self):
+        """
+        功能:
+            基于当前时刻agent状态构建一步内复用的几何缓存，减少重复距离/方向计算。
+        输入:
+            无。
+        输出:
+            dict: step级缓存字典。
+        """
+        step_cache = self._step_cache
+        positions = step_cache["positions"]
+        velocities = step_cache["velocities"]
+        headings = step_cache["headings"]
+        pair_rel = step_cache["pair_rel"]
+        pair_dist = step_cache["pair_dist"]
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+        hunter_to_target_rel = step_cache["hunter_to_target_rel"]
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
+        hunter_to_target_unit = step_cache["hunter_to_target_unit"]
+        speed_norm = step_cache["speed_norm"]
+
+        for aid, agent in enumerate(self.agents):
+            positions[aid, :] = agent.position
+            velocities[aid, :] = agent.velocity
+            heading = np.asarray(agent.heading, dtype=np.float32).reshape(2)
+            norm_val = float(np.linalg.norm(heading))
+            if norm_val <= 1e-8:
+                headings[aid, 0] = 1.0
+                headings[aid, 1] = 0.0
+            else:
+                headings[aid, 0] = float(heading[0] / norm_val)
+                headings[aid, 1] = float(heading[1] / norm_val)
+
+        np.subtract(positions[None, :, :], positions[:, None, :], out=pair_rel)
+        np.sqrt(np.sum(pair_rel * pair_rel, axis=2), out=pair_dist)
+
+        for hid in range(self.num_hunters):
+            hunter_alive = bool(self.hunters[hid].alive) and (not bool(self.hunters[hid].collided))
+            hunter_valid_mask[hid] = bool(self.active_hunter_mask[hid]) and hunter_alive
+
+            rel_x = float(pair_rel[hid, self.target_index, 0])
+            rel_y = float(pair_rel[hid, self.target_index, 1])
+            dist_val = float(pair_dist[hid, self.target_index])
+            hunter_to_target_rel[hid, 0] = rel_x
+            hunter_to_target_rel[hid, 1] = rel_y
+            hunter_to_target_dist[hid] = dist_val
+            if dist_val <= 1e-8:
+                hunter_to_target_unit[hid, 0] = 0.0
+                hunter_to_target_unit[hid, 1] = 0.0
+            else:
+                inv_dist = 1.0 / dist_val
+                hunter_to_target_unit[hid, 0] = float(rel_x * inv_dist)
+                hunter_to_target_unit[hid, 1] = float(rel_y * inv_dist)
+
+        for aid, agent in enumerate(self.agents):
+            vmax = max(float(agent.max_speed), 1e-6)
+            speed_norm[aid] = float(np.linalg.norm(velocities[aid])) / float(vmax)
+
+        self._step_cache_valid = True
+        return step_cache
+
+    def _get_step_cache(self):
+        """
+        功能:
+            获取当前step缓存；若不存在则按需构建。
+        输入:
+            无。
+        输出:
+            dict: step级缓存字典。
+        """
+        if not bool(self._step_cache_valid):
+            self._prepare_step_cache()
+        return self._step_cache
 
     def _sample_initial_headings(self) -> np.ndarray:
         """
@@ -2333,6 +2421,7 @@ class UAVPursuitEnv(object):
         输出:
             list: [obs, rewards, dones, infos]。
         """
+        self._step_cache_valid = False
         # 步骤1：汇总每个agent的最终执行动作
         raw_actions = np.asarray(actions, dtype=np.float32).reshape(self.agent_num, 2)
 
@@ -2419,6 +2508,7 @@ class UAVPursuitEnv(object):
             terminal_bucket_metrics = self._compute_terminal_bucket_metrics()
             self.target.alive = False
             self.target.velocity[:] = 0.0
+            self._step_cache_valid = False
 
         # 步骤5：终止条件判定
         self.step_count += 1
@@ -2971,14 +3061,15 @@ class UAVPursuitEnv(object):
         """
         if not self.target.alive:
             return False
-        for hid, h in enumerate(self.hunters):
-            if not bool(self.active_hunter_mask[hid]):
+        step_cache = self._get_step_cache()
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+        if self.hunter_perception_radius < 0:
+            return bool(np.any(hunter_valid_mask))
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
+        for hid in range(self.num_hunters):
+            if not bool(hunter_valid_mask[hid]):
                 continue
-            if (not h.alive) or bool(h.collided):
-                continue
-            if self.hunter_perception_radius < 0:
-                return True
-            if np.linalg.norm(h.position - self.target.position) <= self.hunter_perception_radius:
+            if float(hunter_to_target_dist[hid]) <= float(self.hunter_perception_radius):
                 return True
         return False
 
@@ -3025,14 +3116,14 @@ class UAVPursuitEnv(object):
         输出:
             bool: True表示满足capture_step连续捕获条件。
         """
-        for i, h in enumerate(self.hunters):
-            if not bool(self.active_hunter_mask[i]):
+        step_cache = self._get_step_cache()
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
+        for i in range(self.num_hunters):
+            if not bool(hunter_valid_mask[i]):
                 self.capture_counter[i] = 0
                 continue
-            if (not h.alive) or bool(h.collided):
-                self.capture_counter[i] = 0
-                continue
-            d = float(np.linalg.norm(h.position - self.target.position))
+            d = float(hunter_to_target_dist[i])
             self.capture_counter[i] = self.capture_counter[i] + 1 if d <= self.capture_dis else 0
         return bool(np.any(self.capture_counter >= self.capture_step))
 
@@ -3054,6 +3145,8 @@ class UAVPursuitEnv(object):
         target_collided = False
         collision_pairs = []
         agents = self.agents
+        step_cache = self._get_step_cache()
+        pair_dist = step_cache["pair_dist"]
         mark_hunter_collided = [False] * self.num_hunters
         collision_rewards = np.zeros(self.agent_num, dtype=np.float32)
         for i in range(self.num_hunters):
@@ -3071,7 +3164,7 @@ class UAVPursuitEnv(object):
                 if bool(agents[j].collided) or (not bool(agents[j].alive)): # 已碰撞或已失活Agent不重新处理碰撞
                     continue
 
-                dist = float(np.linalg.norm(agents[i].position - agents[j].position))
+                dist = float(pair_dist[i, j])
 
                 # Step 1: Hunter-Hunter距离进入safe_dis即开始风险惩罚，越接近collision_dis惩罚越大
                 collision_rewards[i] -= _safe_distance_penalty(
@@ -3138,11 +3231,13 @@ class UAVPursuitEnv(object):
         """
         encircle_ids = []
         escape_radius = float(getattr(self.target, "escape_dis", 0.0))
+        step_cache = self._get_step_cache()
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
         for hid in range(self.num_hunters):
-            hunter = self.hunters[hid]
-            if not bool(self._hunter_alive_for_team_ops(hid)):
+            if not bool(hunter_valid_mask[hid]):
                 continue
-            dist = float(np.linalg.norm(np.asarray(hunter.position) - np.asarray(self.target.position)))
+            dist = float(hunter_to_target_dist[hid])
             if escape_radius > 0.0 and dist > escape_radius:
                 continue
             encircle_ids.append(int(hid))
@@ -3229,19 +3324,24 @@ class UAVPursuitEnv(object):
             for hid in captor_ids:
                 capture_reward[int(hid)] = float(self.hunter_capture_reward)
         elif mode == "spread":
+            step_cache = self._get_step_cache()
+            hunter_valid_mask = step_cache["hunter_valid_mask"]
+            hunter_to_target_dist = step_cache["hunter_to_target_dist"]
+            hunter_to_target_unit = step_cache["hunter_to_target_unit"]
             eligible_ids = []
             for hid in range(self.num_hunters):
-                if not bool(self._hunter_alive_for_team_ops(hid)):
+                if not bool(hunter_valid_mask[hid]):
                     continue
                 eligible_ids.append(int(hid))
             if len(eligible_ids) > 0:
-                target_pos = np.asarray(self.target.position, dtype=np.float32)
                 ref_vec = np.zeros(2, dtype=np.float32)
                 for hid in captor_ids:
-                    diff = target_pos - np.asarray(self.hunters[int(hid)].position, dtype=np.float32)
-                    norm = float(np.linalg.norm(diff))
-                    if norm > 1e-6:
-                        ref_vec = ref_vec + (diff / norm).astype(np.float32)
+                    hid_i = int(hid)
+                    if hid_i < 0 or hid_i >= self.num_hunters:
+                        continue
+                    if float(hunter_to_target_dist[hid_i]) <= 1e-6:
+                        continue
+                    ref_vec = ref_vec + hunter_to_target_unit[hid_i]
                 ref_norm = float(np.linalg.norm(ref_vec))
                 if ref_norm <= 1e-6:
                     ref_vec = np.asarray([1.0, 0.0], dtype=np.float32)
@@ -3250,12 +3350,11 @@ class UAVPursuitEnv(object):
 
                 raw_scores = []
                 for hid in eligible_ids:
-                    diff = target_pos - np.asarray(self.hunters[int(hid)].position, dtype=np.float32)
-                    norm = float(np.linalg.norm(diff))
-                    if norm <= 1e-6:
+                    hid_i = int(hid)
+                    if float(hunter_to_target_dist[hid_i]) <= 1e-6:
                         raw_scores.append(0.0)
                         continue
-                    hunter_dir = (diff / norm).astype(np.float32)
+                    hunter_dir = hunter_to_target_unit[hid_i]
                     dot_val = float(np.clip(float(np.dot(hunter_dir, ref_vec)), -1.0, 1.0))
                     raw_scores.append(max(0.0, 1.0 - dot_val))
                 raw_scores = np.asarray(raw_scores, dtype=np.float32)
@@ -3293,14 +3392,11 @@ class UAVPursuitEnv(object):
                 quality_info = self._compute_capture_encircle_quality(encircle_ids, gap_info=gap_info)
                 hunter_quality_score = float(quality_info.get("hunter_quality_score", 0.0))
                 if abs(hunter_quality_score) > 1e-8:
-                    target_pos = np.asarray(self.target.position, dtype=np.float32)
+                    step_cache = self._get_step_cache()
+                    hunter_to_target_dist = step_cache["hunter_to_target_dist"]
                     inv_dist = []
                     for hid in support_ids:
-                        dist = float(
-                            np.linalg.norm(
-                                np.asarray(self.hunters[int(hid)].position, dtype=np.float32) - target_pos
-                            )
-                        )
+                        dist = float(hunter_to_target_dist[int(hid)])
                         inv_dist.append(1.0 / max(dist, 1e-6))
                     inv_dist = np.asarray(inv_dist, dtype=np.float32)
                     weight_sum = float(np.max(inv_dist))
@@ -3363,15 +3459,15 @@ class UAVPursuitEnv(object):
         输出:
             list[int]: 满足active且alive且未collided且d<=capture_dis的Hunter索引。
         """
-        target_pos = np.asarray(self.target.position, dtype=np.float32)
+        step_cache = self._get_step_cache()
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
         capture_dis_safe = max(float(self.capture_dis), 1e-6)
         prepare_ids = []
         for hid in range(self.num_hunters):
-            if not bool(self._hunter_alive_for_team_ops(hid)):
+            if not bool(hunter_valid_mask[hid]):
                 continue
-            dist = float(
-                np.linalg.norm(np.asarray(self.hunters[int(hid)].position, dtype=np.float32) - target_pos)
-            )
+            dist = float(hunter_to_target_dist[int(hid)])
             if dist <= capture_dis_safe:
                 prepare_ids.append(int(hid))
         return prepare_ids
@@ -3582,17 +3678,18 @@ class UAVPursuitEnv(object):
             self.last_spread_score_mean = 0.0
             return rewards
 
-        unit_vectors = []
+        step_cache = self._get_step_cache()
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
+        hunter_to_target_unit = step_cache["hunter_to_target_unit"]
         valid_hunter_ids = []
-        target_pos = np.asarray(self.target.position, dtype=np.float32)
+        unit_vectors = []
         for hid in range(self.num_hunters):
-            if not bool(self._hunter_alive_for_team_ops(hid)):
+            if not bool(hunter_valid_mask[hid]):
                 continue
-            rel = target_pos - np.asarray(self.hunters[hid].position, dtype=np.float32)
-            rel_norm = float(np.linalg.norm(rel))
-            if rel_norm <= 1e-8:
+            if float(hunter_to_target_dist[hid]) <= 1e-8:
                 continue
-            unit_vectors.append((rel / rel_norm).astype(np.float32))
+            unit_vectors.append(hunter_to_target_unit[hid])
             valid_hunter_ids.append(int(hid))
 
         if len(valid_hunter_ids) < 2:
@@ -3687,6 +3784,9 @@ class UAVPursuitEnv(object):
         diversity_traj_reward = np.zeros(self.agent_num, dtype=np.float32)
         diversity_reward = np.zeros(self.agent_num, dtype=np.float32)
         spread_reward = np.zeros(self.agent_num, dtype=np.float32)
+        step_cache = self._get_step_cache()
+        hunter_to_target_dist = step_cache["hunter_to_target_dist"]
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
 
         dist_scale = max(float(self.world_size), 1e-6)
         capture_dis_safe = max(float(self.capture_dis), 1e-6)
@@ -3700,10 +3800,10 @@ class UAVPursuitEnv(object):
             # 距离变小为正奖励，变大为负奖励；再按norm_scale归一化到[-1,1]。
             delta_norm_values = []
             norm_scale = max(float(self.base_delta_norm_scale), 1e-6)
-            for hid, hunter in enumerate(self.hunters):
+            for hid in range(self.num_hunters):
                 if not bool(self.active_hunter_mask[hid]):
                     continue
-                d_now = float(np.linalg.norm(hunter.position - self.target.position))
+                d_now = float(hunter_to_target_dist[hid])
                 hunter_d.append(d_now)
                 hist = self.hunter_distance_histories[hid]
                 # 仅在未进入capture范围时计算delta-window base reward。
@@ -3740,10 +3840,10 @@ class UAVPursuitEnv(object):
         else:
             # Step 1.1: 旧版base reward（距离分段 + streak）
             active_dist_pairs = []
-            for hid, hunter in enumerate(self.hunters):
-                if not bool(self._hunter_alive_for_team_ops(hid)):
+            for hid in range(self.num_hunters):
+                if not bool(hunter_valid_mask[hid]):
                     continue
-                d_val = float(np.linalg.norm(hunter.position - self.target.position))
+                d_val = float(hunter_to_target_dist[hid])
                 active_dist_pairs.append((d_val, int(hid)))
             active_dist_pairs.sort(key=lambda x: x[0])
             if bool(self.base_reward_topk_enable):
@@ -3752,10 +3852,10 @@ class UAVPursuitEnv(object):
             else:
                 topk_ids = {hid for _, hid in active_dist_pairs}
 
-            for i, h in enumerate(self.hunters):
-                if not bool(self._hunter_alive_for_team_ops(i)):
+            for i in range(self.num_hunters):
+                if not bool(hunter_valid_mask[i]):
                     continue
-                d = float(np.linalg.norm(h.position - self.target.position))
+                d = float(hunter_to_target_dist[i])
                 hunter_d.append(d)
                 is_topk_hunter = bool(int(i) in topk_ids)
                 base_scale = 1.0 if is_topk_hunter else float(self.base_reward_non_topk_scale)
@@ -3875,12 +3975,7 @@ class UAVPursuitEnv(object):
         spread_reward = self._compute_spread_reward().astype(np.float32)
 
         # Step 3: 归一化速度线性惩罚，避免数值爆炸。 0速度也有惩罚，加速任务执行
-        speed_penalty_vals = []
-        for a in self.agents:
-            vmax = max(float(a.max_speed), 1e-6)
-            speed_norm = float(np.linalg.norm(a.velocity)) / vmax
-            speed_penalty_vals.append(speed_norm)
-        speed_penalty_reward = -self.speed_penalty * (1 + np.asarray(speed_penalty_vals, dtype=np.float32))
+        speed_penalty_reward = -self.speed_penalty * (1 + step_cache["speed_norm"])
 
         # Step 3.1: 进入预备抓捕阶段后，Hunter分轨奖励。
         # - 所有Hunter关闭base reward；
@@ -4061,62 +4156,60 @@ class UAVPursuitEnv(object):
             List[np.ndarray]: shape=(agent_num, obs_dim)。
         """
         scale = max(self.world_size, 1e-6)
+        inv_scale = 1.0 / float(scale)
         obs = []
         self.last_coord_summary_cache.fill(0.0)
+        step_cache = self._get_step_cache()
+        positions = step_cache["positions"]
+        velocities = step_cache["velocities"]
+        headings = step_cache["headings"]
+        pair_rel = step_cache["pair_rel"]
+        pair_dist = step_cache["pair_dist"]
+        hunter_valid_mask = step_cache["hunter_valid_mask"]
+
         for i, ai in enumerate(self.agents):
             if i < self.num_hunters and not bool(self.active_hunter_mask[i]):
                 obs.append(np.zeros(self.obs_dim, dtype=np.float32))
                 continue
 
-            own = np.concatenate([ai.position / scale, ai.velocity / scale]).astype(np.float32)
+            ai_pos = positions[i]
+            ai_vel = velocities[i]
+            ai_heading = headings[i]
+            own = np.concatenate([ai_pos * inv_scale, ai_vel * inv_scale]).astype(np.float32)
 
             # target总是可观测：在当前agent局部坐标系下的相对距离与方向
-            target_d, target_dir = self._relative_polar_feature(
-                observer=ai,
-                target_pos=np.asarray(self.target.position, dtype=np.float32),
-                scale=scale,
-            )
+            target_rel = pair_rel[i, self.target_index]
+            target_d = float(pair_dist[i, self.target_index] * inv_scale)
+            target_dot = float(ai_heading[0] * target_rel[0] + ai_heading[1] * target_rel[1])
+            target_cross = float(ai_heading[0] * target_rel[1] - ai_heading[1] * target_rel[0])
+            target_dir = float(np.clip(float(np.arctan2(target_cross, target_dot)) / np.pi, -1.0, 1.0))
             target_obs = np.array([target_d, target_dir], dtype=np.float32)
 
             # topK hunter相对极坐标: [dist, dir, valid]
             hunter_candidates = []
             for hid in range(self.num_hunters):
-                if not bool(self._hunter_alive_for_team_ops(hid)):
+                if not bool(hunter_valid_mask[hid]):
                     continue
                 if i < self.num_hunters and int(hid) == int(i):
                     continue
-                hunter = self.hunters[hid]
-                dist = float(np.linalg.norm(np.asarray(hunter.position) - np.asarray(ai.position)))
-                rel_d, rel_dir = self._relative_polar_feature(
-                    observer=ai,
-                    target_pos=np.asarray(hunter.position, dtype=np.float32),
-                    scale=scale,
-                )
-                hunter_candidates.append(
-                    {
-                        "hid": int(hid),
-                        "dist": float(dist),
-                        "rel_d": float(rel_d),
-                        "rel_dir": float(rel_dir),
-                    }
-                )
+                rel = pair_rel[i, hid]
+                dist = float(pair_dist[i, hid])
+                rel_d = float(dist * inv_scale)
+                dot_val = float(ai_heading[0] * rel[0] + ai_heading[1] * rel[1])
+                cross_val = float(ai_heading[0] * rel[1] - ai_heading[1] * rel[0])
+                rel_dir = float(np.clip(float(np.arctan2(cross_val, dot_val)) / np.pi, -1.0, 1.0))
+                hunter_candidates.append((float(dist), int(hid), float(rel_d), float(rel_dir)))
             # Step 1: 先按距离选取topK邻居（tie-break按hid保证稳定）。
-            hunter_candidates.sort(key=lambda x: (float(x["dist"]), int(x["hid"])))
+            hunter_candidates.sort(key=lambda x: (float(x[0]), int(x[1])))
             selected = hunter_candidates[: self.neighbor_N]
             # Step 2: 对topK按相对角度升序排列，保证同分布下槽位顺序稳定。
-            selected.sort(key=lambda x: (float(x["rel_dir"]), float(x["dist"]), int(x["hid"])))
-
-            slots = []
-            for item in selected:
-                slots.append(
-                    np.array(
-                        [float(item["rel_d"]), float(item["rel_dir"]), 1.0],
-                        dtype=np.float32,
-                    )
-                )
-            while len(slots) < self.neighbor_N:
-                slots.append(np.zeros(3, dtype=np.float32))
-            hunter_obs = np.concatenate(slots, axis=0).astype(np.float32) if len(slots) > 0 else np.zeros(0, dtype=np.float32)
+            selected.sort(key=lambda x: (float(x[3]), float(x[0]), int(x[1])))
+            hunter_obs = np.zeros(self.neighbor_N * 3, dtype=np.float32)
+            for idx, item in enumerate(selected):
+                base = int(idx) * 3
+                hunter_obs[base] = float(item[2])
+                hunter_obs[base + 1] = float(item[3])
+                hunter_obs[base + 2] = 1.0
 
             obs.append(np.concatenate([own, target_obs, hunter_obs], axis=0).astype(np.float32))
         return obs
