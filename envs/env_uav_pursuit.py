@@ -1170,14 +1170,14 @@ class TargetAgent(BaseAgent):
             "hunter_quality_score": 0.0,
             "target_quality_score": 0.0,
         }
-        if not bool(gap_info.get("metric_valid", False)):
+        if not bool(gap_info["metric_valid"]):
             return quality_info
 
-        encircling_hunter_ids = list(gap_info.get("encircling_hunter_ids", []))
+        encircling_hunter_ids = list(gap_info["encircling_hunter_ids"])
         if len(encircling_hunter_ids) <= 1:
             return quality_info
 
-        max_gap_angle = float(gap_info.get("max_gap_angle", 0.0))
+        max_gap_angle = float(gap_info["max_gap_angle"])
         n_encircle = int(len(encircling_hunter_ids))
         rep_block_lengths = [
             float(max(0.0, hunters[int(hid)].block_length))
@@ -1254,24 +1254,24 @@ class TargetAgent(BaseAgent):
             return 0.0, 0.0, 0.0, 0.0, [], gap_info
         
         gap_info = self.compute_max_escape_gap(hunters, active_hunter_mask)
-        if (not bool(gap_info.get("metric_valid", False))) or int(gap_info.get("active_alive_hunters", 0)) <= 1:
+        if (not bool(gap_info["metric_valid"])) or int(gap_info["active_alive_hunters"]) <= 1:
             return 0.0, 0.0, 0.0, 0.0, [], gap_info
-        encircling_hunter_ids = list(gap_info.get("encircling_hunter_ids", []))
+        encircling_hunter_ids = list(gap_info["encircling_hunter_ids"])
         if len(encircling_hunter_ids) <= 1:
             return 0.0, 0.0, 0.0, 0.0, [], gap_info
 
         quality_info = self.compute_encircle_quality_from_gap_info(hunters, gap_info)
-        if not bool(quality_info.get("metric_valid", False)):
+        if not bool(quality_info["metric_valid"]):
             return 0.0, 0.0, 0.0, 0.0, [], gap_info
-        max_gap_angle = float(gap_info.get("max_gap_angle", 0.0))
-        encircle_score = float(quality_info.get("encircle_score", 0.0))
-        gap_open_score = float(quality_info.get("gap_open_score", 0.0))
-        ideal_gap = float(quality_info.get("ideal_escape_gap_angle", 0.0))
-        worst_gap = float(quality_info.get("worst_escape_gap_angle", 0.0))
-        angle_blk = float(quality_info.get("angle_blk", 0.0))
-        gap_open_ratio = float(quality_info.get("gap_open_ratio", 1.0))
-        hunter_quality_score = float(quality_info.get("hunter_quality_score", 0.0))
-        target_quality_score = float(quality_info.get("target_quality_score", 0.0))
+        max_gap_angle = float(gap_info["max_gap_angle"])
+        encircle_score = float(quality_info["encircle_score"])
+        gap_open_score = float(quality_info["gap_open_score"])
+        ideal_gap = float(quality_info["ideal_escape_gap_angle"])
+        worst_gap = float(quality_info["worst_escape_gap_angle"])
+        angle_blk = float(quality_info["angle_blk"])
+        gap_open_ratio = float(quality_info["gap_open_ratio"])
+        hunter_quality_score = float(quality_info["hunter_quality_score"])
+        target_quality_score = float(quality_info["target_quality_score"])
         worst_thr = float(self.escape_gap_quality_worst_penalty_threshold)
 
         # Step 1: 包围质量奖励
@@ -1301,7 +1301,7 @@ class TargetAgent(BaseAgent):
             # - Target: 鼓励朝逃脱缺口中心方向运动。
             # - Hunter: 鼓励Target运动方向与逃脱缺口中心方向相反。
             target_move_angle = float(np.arctan2(float(self.velocity[1]), float(self.velocity[0])))
-            gap_center = float(gap_info.get("max_gap_center_angle", 0.0))
+            gap_center = float(gap_info["max_gap_center_angle"])
             angle_delta = float(self._wrap_angle(target_move_angle - gap_center))
             target_direction_score = 0.5 * (1.0 + float(np.cos(angle_delta)))
             hunter_direction_score = 0.5 * (1.0 + float(np.cos(angle_delta - np.pi)))
@@ -1499,44 +1499,16 @@ class UAVPursuitEnv(object):
         escape_gap_hunter_reward_scale = float(max(0.0, reward_cfg.escape_gap_hunter_reward_scale))
         escape_gap_target_reward_scale = float(max(0.0, reward_cfg.escape_gap_target_reward_scale))
         escape_gap_encircle_hunter_reward_scale = float(
-            max(
-                0.0,
-                getattr(
-                    reward_cfg,
-                    "escape_gap_encircle_hunter_reward_scale",
-                    escape_gap_hunter_reward_scale,
-                ),
-            )
+            max(0.0, reward_cfg.escape_gap_encircle_hunter_reward_scale)
         )
         escape_gap_encircle_target_reward_scale = float(
-            max(
-                0.0,
-                getattr(
-                    reward_cfg,
-                    "escape_gap_encircle_target_reward_scale",
-                    escape_gap_target_reward_scale,
-                ),
-            )
+            max(0.0, reward_cfg.escape_gap_encircle_target_reward_scale)
         )
         escape_gap_intercept_hunter_reward_scale = float(
-            max(
-                0.0,
-                getattr(
-                    reward_cfg,
-                    "escape_gap_intercept_hunter_reward_scale",
-                    escape_gap_hunter_reward_scale,
-                ),
-            )
+            max(0.0, reward_cfg.escape_gap_intercept_hunter_reward_scale)
         )
         escape_gap_intercept_target_reward_scale = float(
-            max(
-                0.0,
-                getattr(
-                    reward_cfg,
-                    "escape_gap_intercept_target_reward_scale",
-                    escape_gap_target_reward_scale,
-                ),
-            )
+            max(0.0, reward_cfg.escape_gap_intercept_target_reward_scale)
         )
         if not escape_gap_enable:
             escape_gap_hunter_reward_scale = 0.0
@@ -1547,13 +1519,13 @@ class UAVPursuitEnv(object):
             escape_gap_intercept_target_reward_scale = 0.0
         escape_gap_quality_worst_penalty_threshold = float(
             np.clip(
-                float(getattr(reward_cfg, "escape_gap_quality_worst_penalty_threshold", 0.85)),
+                float(reward_cfg.escape_gap_quality_worst_penalty_threshold),
                 0.0,
                 1.0,
             )
         )
         escape_gap_quality_worst_penalty_scale = float(
-            max(0.0, float(getattr(reward_cfg, "escape_gap_quality_worst_penalty_scale", 0.5)))
+            max(0.0, float(reward_cfg.escape_gap_quality_worst_penalty_scale))
         )
         escape_radius = float(max(0.0, reward_cfg.escape_radius))
         escape_gap_angle_bins = int(max(16, int(reward_cfg.escape_gap_angle_bins)))
@@ -2284,7 +2256,9 @@ class UAVPursuitEnv(object):
         self.target_reward_last = target_reward_value
 
         # 步骤4.1：奖励计算完成后再更新捕获状态，避免capture步escape_gap被alive门控清零。
+        terminal_bucket_metrics = None
         if captured:
+            terminal_bucket_metrics = self._compute_terminal_bucket_metrics()
             self.target.alive = False
             self.target.velocity[:] = 0.0
 
@@ -2296,6 +2270,8 @@ class UAVPursuitEnv(object):
 
         if episode_end:
             self.done[:] = True
+            if terminal_bucket_metrics is None:
+                terminal_bucket_metrics = self._compute_terminal_bucket_metrics()
         else:
             self.done = np.array([not a.alive for a in self.agents], dtype=bool)
 
@@ -2332,6 +2308,14 @@ class UAVPursuitEnv(object):
             }
             for i, a in enumerate(self.agents)
         ]
+        if terminal_bucket_metrics is not None:
+            for info in infos:
+                info["terminal_bucket_metric_valid"] = True
+                info["max_escape_gap_angle"] = float(terminal_bucket_metrics["max_escape_gap_angle"])
+                info["max_escape_gap_metric_valid"] = bool(
+                    terminal_bucket_metrics["max_escape_gap_metric_valid"]
+                )
+                info["capture_spread_reward"] = float(terminal_bucket_metrics["capture_spread_reward"])
         return [obs, rews, dones, infos]
 
     def _normalized_heading(self, heading: np.ndarray) -> np.ndarray:
@@ -3359,17 +3343,19 @@ class UAVPursuitEnv(object):
         self.last_traj_diversity_score_mean = float(np.mean(score_vals)) if len(score_vals) > 0 else 0.0
         return rewards
 
-    def _compute_spread_reward(self) -> np.ndarray:
+    def _compute_spread_reward_values(self, respect_enable_gate: bool) -> np.ndarray:
         """
         功能:
             基于“hunter->target单位向量几何中心偏移”计算包围分散奖励。
         输入:
-            无。
+            respect_enable_gate (bool): 是否遵守reward.spread_reward_enable开关。
         输出:
             np.ndarray: spread奖励，shape=(agent_num,)。
         """
         rewards = np.zeros(self.agent_num, dtype=np.float32)
-        if (not bool(self.spread_reward_enable)) or float(self.spread_reward_coef) == 0.0:
+        if bool(respect_enable_gate) and (
+            (not bool(self.spread_reward_enable)) or float(self.spread_reward_coef) == 0.0
+        ):
             self.last_spread_score_mean = 0.0
             return rewards
 
@@ -3403,6 +3389,48 @@ class UAVPursuitEnv(object):
             rewards[int(hid)] = float(per_hunter_reward)
         self.last_spread_score_mean = spread_score
         return rewards
+
+    def _compute_spread_reward(self) -> np.ndarray:
+        """
+        功能:
+            计算参与训练奖励聚合的spread奖励。
+        输入:
+            无。
+        输出:
+            np.ndarray: spread奖励，shape=(agent_num,)。
+        """
+        return self._compute_spread_reward_values(respect_enable_gate=True)
+
+    def _compute_terminal_bucket_metrics(self) -> dict:
+        """
+        功能:
+            在episode终止时计算bucket统计所需的几何指标，不受reward enable开关影响。
+        输入:
+            无。
+        输出:
+            dict: 终止步bucket指标，包含escape gap有效性、角度和capture spread reward。
+        """
+        gap_info = self.target.compute_max_escape_gap(self.hunters, self.active_hunter_mask)
+        spread_reward_values = self._compute_spread_reward_values(respect_enable_gate=False)
+        spread_vals = []
+        for hid in range(self.num_hunters):
+            if not bool(self.active_hunter_mask[hid]):
+                continue
+            if not bool(self.hunters[hid].alive):
+                continue
+            if bool(self.hunters[hid].collided):
+                continue
+            spread_vals.append(float(spread_reward_values[hid]))
+        capture_spread_reward = (
+            float(np.mean(np.asarray(spread_vals, dtype=np.float32)))
+            if len(spread_vals) > 0
+            else 0.0
+        )
+        return {
+            "max_escape_gap_metric_valid": bool(gap_info["metric_valid"]),
+            "max_escape_gap_angle": float(gap_info["max_gap_angle"]),
+            "capture_spread_reward": float(capture_spread_reward),
+        }
 
     def _compute_rewards(self, captured, collision_rewards):
         """

@@ -303,6 +303,43 @@ def _extract_terminal_frame(env_infos):
     return None
 
 
+def _extract_target_info(env_infos, target_index):
+    """
+    功能:
+        从单环境infos中提取Target的info字典。
+    输入:
+        env_infos (list[dict]): 单环境infos。
+        target_index (int): Target在agent维度上的索引。
+    输出:
+        dict: Target对应的info字典。
+    """
+    if env_infos is None or len(env_infos) <= int(target_index):
+        raise KeyError("Target info missing for target_index={}".format(int(target_index)))
+    target_info = env_infos[int(target_index)]
+    if not isinstance(target_info, dict):
+        raise TypeError("Target info must be dict, got {}".format(type(target_info).__name__))
+    return target_info
+
+
+def _env_infos_has_capture(env_infos):
+    """
+    功能:
+        判断单环境infos中是否记录了本步捕获。
+    输入:
+        env_infos (list[dict]): 单环境infos。
+    输出:
+        bool: 任一agent info标记captured=True时返回True。
+    """
+    if env_infos is None:
+        return False
+    for agent_info in env_infos:
+        if not isinstance(agent_info, dict):
+            continue
+        if bool(agent_info["captured"]):
+            return True
+    return False
+
+
 def _build_gif_header_text(episode_id, capture_step, alive_rate):
     """
     功能:
@@ -500,35 +537,15 @@ def _evaluate_rule_on_env(
             hunter_step_rewards = np.asarray(rewards[int(env_i), : int(num_hunters), 0], dtype=np.float32)
             env_episode_rewards[int(env_i)] += float(np.sum(hunter_step_rewards) / max(1, int(num_hunters)))
 
-            if (not bool(env_captured[int(env_i)])) and any(
-                bool(agent_info.get("captured", False)) for agent_info in env_infos
-            ):
+            if (not bool(env_captured[int(env_i)])) and _env_infos_has_capture(env_infos):
                 env_captured[int(env_i)] = True
                 env_capture_step[int(env_i)] = int(step + 1)
-                target_info = env_infos[int(num_agents - 1)] if len(env_infos) > int(num_agents - 1) else {}
-                metric_valid = bool(target_info.get("max_escape_gap_metric_valid", False))
-                metric_angle = float(target_info.get("max_escape_gap_angle", float("nan")))
+                target_info = _extract_target_info(env_infos, int(num_agents - 1))
+                metric_valid = bool(target_info["max_escape_gap_metric_valid"])
+                metric_angle = float(target_info["max_escape_gap_angle"])
                 if metric_valid and np.isfinite(metric_angle):
                     env_capture_escape_gap_angle[int(env_i)] = float(metric_angle)
-                spread_vals = []
-                for hid in range(int(num_hunters)):
-                    if hid >= len(env_infos):
-                        break
-                    agent_info = env_infos[hid]
-                    if not isinstance(agent_info, dict):
-                        continue
-                    if not bool(agent_info.get("active_agent", True)):
-                        continue
-                    if not bool(agent_info.get("alive", False)):
-                        continue
-                    if bool(agent_info.get("collided", False)):
-                        continue
-                    spread_vals.append(float(agent_info.get("reward_spread", 0.0)))
-                env_capture_spread_reward[int(env_i)] = (
-                    float(np.mean(np.asarray(spread_vals, dtype=np.float32)))
-                    if len(spread_vals) > 0
-                    else 0.0
-                )
+                env_capture_spread_reward[int(env_i)] = float(target_info["capture_spread_reward"])
 
             done_env = bool(np.all(dones[int(env_i)]))
             if done_env:
@@ -963,8 +980,8 @@ def main():
                 "capture_steps": float(metric["capture_steps"]),
                 "capture_steps_objective": float(metric["capture_steps_objective"]),
                 "alive_rate": float(metric["alive_rate"]),
-                "max_escape_gap_angle": float(metric.get("max_escape_gap_angle", float("nan"))),
-                "capture_spread_reward": float(metric.get("capture_spread_reward", float("nan"))),
+                "max_escape_gap_angle": float(metric["max_escape_gap_angle"]),
+                "capture_spread_reward": float(metric["capture_spread_reward"]),
                 "captured_episodes": int(metric["captured_episodes"]),
                 "total_eval_episodes": int(metric["total_eval_episodes"]),
             }
