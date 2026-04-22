@@ -148,7 +148,7 @@ env:
 Hunter:
   perception_radius: -1
   max_velo: 20
-  safe_dis: 15
+  safe_dis: 8
   control_mode: velocity  # Choices: ["acceleration", "velocity"]
   max_acc: 2
   max_turn_angle: 5
@@ -157,12 +157,12 @@ Hunter:
 Explorer:
   perception_radius: -1
   max_velo: 20
-  safe_dis: 15
+  safe_dis: 8
 
 Target: 
   perception_radius: -1
   max_velo: 25
-  safe_dis: 15
+  safe_dis: 8
   control_mode: velocity
   max_acc: 2
   max_turn_angle: -1
@@ -323,6 +323,10 @@ domain_randomization:
     seed_range: [1, 100000]
     target_policy_choices: ["learn"]
     patrol_name_choices: ["square", "ring"]
+
+curriculum:
+  enable: false
+  stages: []
 
 # Pretrained model
 pretrained:

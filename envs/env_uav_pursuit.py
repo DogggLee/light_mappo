@@ -1654,6 +1654,14 @@ class UAVPursuitEnv(object):
         self.default_hunters_in_zone = bool(self.hunters_in_zone)
 
         self.train_split_cfg = config.domain_randomization.train_split
+        self.curriculum_cfg = config.curriculum
+        self.curriculum_enable = bool(self.curriculum_cfg.enable)
+        if bool(self.curriculum_enable) and bool(self.train_split_cfg.enable):
+            raise ValueError(
+                "curriculum.enable=true requires domain_randomization.train_split.enable=false; "
+                "curriculum owns train task sampling when enabled."
+            )
+        self.curriculum_update = 0
 
     @property
     def agents(self):
@@ -1692,6 +1700,17 @@ class UAVPursuitEnv(object):
         """
         self.regen_scope = str(scope).lower()
 
+    def set_curriculum_update(self, update_idx):
+        """
+        功能:
+            设置当前课程学习update编号，供训练环境reset时选择课程阶段。
+        输入:
+            update_idx (int): 当前训练update编号。
+        输出:
+            无。
+        """
+        self.curriculum_update = int(update_idx)
+
     def reset(self, mode: str = "initial", task_spec: Optional[dict] = None):
         """
         功能:
@@ -1721,6 +1740,13 @@ class UAVPursuitEnv(object):
 
         if mode_val != "initial":
             raise ValueError(f"Unsupported reset mode: {mode}")
+
+        if self.regen_scope == "train" and task_spec is None and bool(self.curriculum_enable):
+            sampled_spec = self._sample_curriculum_task_spec(update_idx=int(self.curriculum_update))
+            self._apply_task_spec(sampled_spec, reset_position_rng=True)
+            self._reset_target_route_state_for_recover()
+            self.initial_reset_count = 0
+            return self._reset_with_sampled_positions()
 
         # train阶段：按initial reset次数触发周期性regen
         if self.regen_scope == "train" and task_spec is None and bool(self.train_split_cfg.enable):
@@ -1869,6 +1895,15 @@ class UAVPursuitEnv(object):
         world_size = float(spec.get("world_size", self.default_world_size))
         self.world_size = float(max(1e-6, world_size))
         self.target.world_size = float(self.world_size)
+
+        if "hunter_max_speed" in spec:
+            hunter_max_speed = float(spec["hunter_max_speed"])
+            for hunter in self.hunters:
+                hunter.max_speed = float(max(1e-6, hunter_max_speed))
+        if "target_max_speed" in spec:
+            self.target.max_speed = float(max(1e-6, float(spec["target_max_speed"])))
+        if "capture_dis" in spec:
+            self.capture_dis = float(max(1e-6, float(spec["capture_dis"])))
 
         active_num_hunters = int(spec.get("num_hunters", self.num_hunters))
         active_num_hunters = int(np.clip(active_num_hunters, 1, self.num_hunters))
@@ -2091,6 +2126,108 @@ class UAVPursuitEnv(object):
             if dist <= capture_dis_safe:
                 return False
         return True
+
+    def _select_curriculum_stage(self, update_idx: int):
+        """
+        功能:
+            根据当前全局update编号选择课程学习阶段。
+        输入:
+            update_idx (int): 当前训练update编号。
+        输出:
+            object: 当前课程阶段配置对象。
+        """
+        stages = list(self.curriculum_cfg.stages)
+        if len(stages) == 0:
+            raise ValueError("curriculum.stages must be non-empty when curriculum.enable=true.")
+
+        selected_stage = None
+        selected_start = None
+        for stage in stages:
+            start_update = int(stage["start_update"])
+            if start_update <= int(update_idx) and (
+                selected_stage is None or start_update > int(selected_start)
+            ):
+                selected_stage = stage
+                selected_start = int(start_update)
+        if selected_stage is None:
+            raise ValueError(
+                "No curriculum stage is active at update {}. "
+                "At least one stage.start_update must be <= current update.".format(int(update_idx))
+            )
+        return selected_stage
+
+    def _sample_bool_choice(self, choices, field_name: str) -> bool:
+        """
+        功能:
+            从布尔choices中采样一个值，并严格解析布尔类型。
+        输入:
+            choices (list): 候选值列表。
+            field_name (str): 字段名，用于错误信息。
+        输出:
+            bool: 采样得到的布尔值。
+        """
+        raw = self.rng.choice(list(choices))
+        if isinstance(raw, (bool, np.bool_)):
+            return bool(raw)
+        if isinstance(raw, (int, np.integer)):
+            if int(raw) in (0, 1):
+                return bool(int(raw))
+        raise ValueError("{} must contain bool or 0/1 values, got {}.".format(str(field_name), repr(raw)))
+
+    def _sample_curriculum_task_spec(self, update_idx: int):
+        """
+        功能:
+            按当前课程阶段采样训练任务规格。
+        输入:
+            update_idx (int): 当前训练update编号。
+        输出:
+            dict: 采样得到的任务规格。
+        """
+        stage = self._select_curriculum_stage(update_idx=int(update_idx))
+        stage_name = str(stage["name"])
+
+        world_size = float(self.rng.choice(list(stage["world_size_choices"])))
+        num_hunters = int(self.rng.choice(list(stage["num_hunters_choices"])))
+        hunters_in_zone = self._sample_bool_choice(
+            choices=stage["hunters_in_zone_choices"],
+            field_name="curriculum.stages[].hunters_in_zone_choices",
+        )
+        hunter_max_speed = float(self.rng.choice(list(stage["hunter_max_speed_choices"])))
+        target_max_speed_ratio = float(self.rng.choice(list(stage["target_max_speed_ratio_choices"])))
+        capture_dis_ratio = float(self.rng.choice(list(stage["capture_dis_ratio_choices"])))
+        target_policy_source = str(
+            self.rng.choice(list(stage["target_policy_source_choices"]))
+        ).lower()
+
+        patrol_choices = list(stage["patrol_name_choices"])
+        target_patrol_names = list(self.default_target_patrol_names)
+        if target_policy_source == "patrol":
+            target_patrol_names = [str(self.rng.choice(patrol_choices))]
+
+        seed_range = list(stage["seed_range"])
+        seed_min = int(min(int(seed_range[0]), int(seed_range[1])))
+        seed_max = int(max(int(seed_range[0]), int(seed_range[1])))
+        seed_val = int(self.rng.randint(seed_min, seed_max + 1))
+
+        target_max_speed = float(hunter_max_speed * target_max_speed_ratio)
+        capture_dis = float(hunter_max_speed * capture_dis_ratio)
+        return {
+            "curriculum_stage": str(stage_name),
+            "curriculum_update": int(update_idx),
+            "num_hunters": int(np.clip(num_hunters, 1, self.num_hunters)),
+            "hunters_in_zone": bool(hunters_in_zone),
+            "world_size": float(world_size),
+            "hunter_max_speed": float(hunter_max_speed),
+            "target_max_speed_ratio": float(target_max_speed_ratio),
+            "target_max_speed": float(target_max_speed),
+            "capture_dis_ratio": float(capture_dis_ratio),
+            "capture_dis": float(capture_dis),
+            "target_policy_source": str(target_policy_source),
+            "target_patrol_path": str(self.default_target_patrol_path),
+            "target_patrol_names": list(target_patrol_names),
+            "target_route_id": 0,
+            "seed": int(seed_val),
+        }
 
     def _sample_regen_task_spec(self):
         """

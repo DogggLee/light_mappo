@@ -2,18 +2,21 @@ exp:
   algorithm_name: rmappo
   experiment_name: Curriculum
   seed: 1
-  num_env_steps: 4000000 # total environment steps to train
+  num_env_steps: 5000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
   
+  n_rollout_threads: 5
+  n_eval_rollout_threads: 10
+
   bad_stop_eval_times: 10
   bad_stop_max_episode: 600
   bad_stop_capture_rate_threshold: 0.4
 
 # Environment settings (common)
 env:
-  env_name: delBase
+  env_name: MinimalTest
   world_size: 200
-  episode_length: 300 # max steps per episode
+  episode_length: 100 # max steps per episode
   max_hunters_num: 3
   hunters_in_zone: true
   obs_mode: rel_polar  # Choices: ["legacy", "rel_polar"]
@@ -68,7 +71,7 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_enable: false
+  spread_reward_enable: true
   spread_reward_coef: 2.0
 
   # Capture reward
@@ -107,9 +110,9 @@ logging:
   log_png: false
 
 eval:
-  val_interval: 40
-  eval_episode_length: 300
-  fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
+  val_interval: 5
+  eval_episode_length: 100
+  fixed_tasks_file: config/eval_tasks/patrol_tasks_h8_p4_n100.yaml
 
 domain_randomization:
   train_split:

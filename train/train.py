@@ -187,6 +187,13 @@ def _resolve_train_max_hunters_num(merged_cfg):
         int: train env最大hunter数量（最小为1）。
     """
     env_max = int(max(1, int(merged_cfg.env.max_hunters_num)))
+    if bool(merged_cfg.curriculum.enable):
+        curriculum_choices = []
+        for stage in list(merged_cfg.curriculum.stages):
+            curriculum_choices.extend([int(x) for x in list(stage["num_hunters_choices"])])
+        curriculum_max = max(curriculum_choices) if len(curriculum_choices) > 0 else env_max
+        return int(max(env_max, curriculum_max))
+
     choices = [int(x) for x in list(merged_cfg.domain_randomization.train_split.hunter_count_choices)]
     choice_max = max(choices) if len(choices) > 0 else env_max
     return int(max(env_max, choice_max))
@@ -239,6 +246,22 @@ def _print_domain_randomization_settings(
             list(train_split.patrol_name_choices),
         )
     )
+    curriculum_cfg = merged_cfg.curriculum
+    if bool(curriculum_cfg.enable):
+        stage_desc = [
+            "{}@ratio={}->update={}".format(
+                str(stage["name"]),
+                float(stage["start_ratio"]),
+                int(stage["start_update"]),
+            )
+            for stage in list(curriculum_cfg.stages)
+        ]
+        print(
+            "[CurriculumConfig] enable={}, progress_unit=update, stages={}".format(
+                bool(curriculum_cfg.enable),
+                stage_desc,
+            )
+        )
     eval_source = "inline"
     if merged_cfg.eval.fixed_tasks_file is not None:
         eval_source = str(merged_cfg.eval.fixed_tasks_file)
@@ -267,6 +290,150 @@ def _resolve_eval_episode_length(merged_cfg):
     if eval_episode_length is None:
         return int(max(1, int(merged_cfg.env.episode_length)))
     return int(max(1, int(eval_episode_length)))
+
+
+def _require_non_empty_choices(stage, field_name):
+    """
+    校验课程阶段离散choices字段非空。
+
+    输入:
+        stage (dict): 单个课程阶段配置。
+        field_name (str): choices字段名。
+    输出:
+        list: 对应choices列表。
+    """
+    values = list(stage[field_name])
+    if len(values) == 0:
+        raise ValueError("curriculum stage '{}' has empty {}.".format(str(stage["name"]), str(field_name)))
+    return values
+
+
+def _validate_curriculum_config(merged_cfg):
+    """
+    校验课程学习配置，确保课程采样与domain_randomization互斥且阶段字段完整。
+
+    输入:
+        merged_cfg (EasyDict): 分层配置对象。
+    输出:
+        无。
+    """
+    curriculum_cfg = merged_cfg.curriculum
+    if not bool(curriculum_cfg.enable):
+        return
+
+    if bool(merged_cfg.domain_randomization.train_split.enable):
+        raise ValueError(
+            "curriculum.enable=true requires domain_randomization.train_split.enable=false; "
+            "curriculum owns train task sampling when enabled."
+        )
+
+    stages = list(curriculum_cfg.stages)
+    if len(stages) == 0:
+        raise ValueError("curriculum.stages must be non-empty when curriculum.enable=true.")
+
+    required_choice_fields = [
+        "world_size_choices",
+        "num_hunters_choices",
+        "hunters_in_zone_choices",
+        "hunter_max_speed_choices",
+        "target_max_speed_ratio_choices",
+        "capture_dis_ratio_choices",
+        "target_policy_source_choices",
+        "patrol_name_choices",
+    ]
+    supported_target_policies = {"learn", "random", "patrol", "greedy", "escape"}
+    start_ratios = []
+    for stage in stages:
+        stage_name = str(stage["name"])
+        if "start_update" in stage:
+            raise ValueError(
+                "curriculum stage '{}' uses start_update, but curriculum stages must use start_ratio.".format(
+                    stage_name
+                )
+            )
+        start_ratio = float(stage["start_ratio"])
+        if start_ratio < 0.0 or start_ratio > 1.0:
+            raise ValueError("curriculum stage '{}' start_ratio must be in [0, 1].".format(stage_name))
+        start_ratios.append(float(start_ratio))
+
+        for field_name in required_choice_fields:
+            _require_non_empty_choices(stage, field_name)
+
+        for value in list(stage["world_size_choices"]):
+            if float(value) <= 0.0:
+                raise ValueError("curriculum stage '{}' world_size_choices must be > 0.".format(stage_name))
+        for value in list(stage["num_hunters_choices"]):
+            if int(value) <= 0:
+                raise ValueError("curriculum stage '{}' num_hunters_choices must be > 0.".format(stage_name))
+        for value in list(stage["hunter_max_speed_choices"]):
+            if float(value) <= 0.0:
+                raise ValueError("curriculum stage '{}' hunter_max_speed_choices must be > 0.".format(stage_name))
+        for value in list(stage["target_max_speed_ratio_choices"]):
+            if float(value) <= 0.0:
+                raise ValueError("curriculum stage '{}' target_max_speed_ratio_choices must be > 0.".format(stage_name))
+        for value in list(stage["capture_dis_ratio_choices"]):
+            if float(value) <= 0.0:
+                raise ValueError("curriculum stage '{}' capture_dis_ratio_choices must be > 0.".format(stage_name))
+        for value in list(stage["hunters_in_zone_choices"]):
+            if isinstance(value, (bool, np.bool_)):
+                continue
+            if isinstance(value, int) and int(value) in (0, 1):
+                continue
+            raise ValueError(
+                "curriculum stage '{}' hunters_in_zone_choices must contain bool or 0/1 values.".format(
+                    stage_name
+                )
+            )
+
+        seed_range = list(stage["seed_range"])
+        if len(seed_range) != 2:
+            raise ValueError("curriculum stage '{}' seed_range must contain exactly two values.".format(stage_name))
+
+        for raw_policy in list(stage["target_policy_source_choices"]):
+            policy = str(raw_policy).lower()
+            if policy not in supported_target_policies:
+                raise ValueError(
+                    "curriculum stage '{}' has unsupported target_policy_source '{}'. "
+                    "Supported values: {}".format(stage_name, str(raw_policy), sorted(supported_target_policies))
+                )
+
+    if 0.0 not in start_ratios:
+        raise ValueError("curriculum.stages must include one stage with start_ratio=0.0.")
+    if len(set(start_ratios)) != len(start_ratios):
+        raise ValueError("curriculum.stages start_ratio values must be unique.")
+
+
+def _resolve_curriculum_stage_starts(merged_cfg):
+    """
+    功能:
+        将用户配置的start_ratio解析为环境内部使用的start_update。
+    输入:
+        merged_cfg (EasyDict): 分层配置对象。
+    输出:
+        int: 总训练updates数量。
+    """
+    total_updates = (
+        int(merged_cfg.exp.num_env_steps)
+        // int(merged_cfg.env.episode_length)
+        // int(merged_cfg.exp.n_rollout_threads)
+    )
+    total_updates = int(max(1, total_updates))
+    if not bool(merged_cfg.curriculum.enable):
+        return total_updates
+
+    resolved_updates = []
+    for stage in list(merged_cfg.curriculum.stages):
+        start_ratio = float(stage["start_ratio"])
+        start_update = int(np.floor(start_ratio * float(total_updates)))
+        stage["start_update"] = int(max(0, start_update))
+        resolved_updates.append(int(stage["start_update"]))
+    if len(set(resolved_updates)) != len(resolved_updates):
+        raise ValueError(
+            "Resolved curriculum start_update values must be unique; got {} from start_ratio values.".format(
+                resolved_updates
+            )
+        )
+    return total_updates
 
 
 def make_train_env(merged_cfg, train_max_hunters_num):
@@ -397,6 +564,8 @@ def main(args):
         无（执行训练并写入日志/模型文件）。
     """
     merged_cfg = load_config(args.config_file)
+    _validate_curriculum_config(merged_cfg)
+    _resolve_curriculum_stage_starts(merged_cfg)
 
     # Step 1: 校验算法档案与后端可用性
     algo_name = str(merged_cfg.exp.algorithm_name)

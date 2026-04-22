@@ -123,6 +123,17 @@ class ContinuousActionEnv(object):
         """
         self.env.set_regen_scope(scope)
 
+    def set_curriculum_update(self, update_idx):
+        """
+        功能:
+            设置底层环境当前课程学习update编号。
+        输入:
+            update_idx (int): 当前训练update编号。
+        输出:
+            无。
+        """
+        self.env.set_curriculum_update(update_idx)
+
     def close(self):
         """
         功能:

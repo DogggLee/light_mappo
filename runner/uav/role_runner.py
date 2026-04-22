@@ -159,30 +159,39 @@ class RoleBasedRunner(object):
             }
         }
         self.eval_hunter_bucket_metrics_cache = {}
-        print(
-            "[DomainRand] train.enable={}, interval={}, prob={}, hunter_choices={}, seed_range={}, target_policies={}, patrol_pool={}".format(
-                bool(self.cfg.domain_randomization.train_split.enable),
-                int(self.cfg.domain_randomization.train_split.regen_interval_episode),
-                float(self.cfg.domain_randomization.train_split.regen_prob),
-                list(self.cfg.domain_randomization.train_split.hunter_count_choices),
-                list(self.cfg.domain_randomization.train_split.seed_range),
-                list(self.cfg.domain_randomization.train_split.target_policy_choices),
-                list(self.cfg.domain_randomization.train_split.patrol_name_choices),
+        self.curriculum_last_stage_name = None
+        if self.cfg.domain_randomization.train_split.enable:
+            print(
+                "[DomainRand] train.enable={}, interval={}, prob={}, hunter_choices={}, seed_range={}, target_policies={}, patrol_pool={}".format(
+                    bool(self.cfg.domain_randomization.train_split.enable),
+                    int(self.cfg.domain_randomization.train_split.regen_interval_episode),
+                    float(self.cfg.domain_randomization.train_split.regen_prob),
+                    list(self.cfg.domain_randomization.train_split.hunter_count_choices),
+                    list(self.cfg.domain_randomization.train_split.seed_range),
+                    list(self.cfg.domain_randomization.train_split.target_policy_choices),
+                    list(self.cfg.domain_randomization.train_split.patrol_name_choices),
+                )
             )
-        )
+        if bool(self.cfg.curriculum.enable):
+            stage_desc = [
+                "{}@ratio={}->update={}".format(
+                    str(stage["name"]),
+                    float(stage["start_ratio"]),
+                    int(stage["start_update"]),
+                )
+                for stage in list(self.cfg.curriculum.stages)
+            ]
+            print(
+                "[Curriculum] enable=True, progress_unit=update, stages={}".format(
+                    stage_desc
+                )
+            )
         print(
             "[EvalConfig] fixed_task_source={}, inline_fixed_tasks={}".format(
                 "inline" if self.cfg.eval.fixed_tasks_file is None else str(self.cfg.eval.fixed_tasks_file),
                 int(len(self.cfg.eval.fixed_tasks)),
             )
         )
-        print(
-            "[EvalDebug] step_render={}, step_plot={}".format(
-                bool(self.eval_step_render),
-                bool(self.eval_step_plot),
-            )
-        )
-        print("[BufferMode] role_buffer_mode={}".format(str(self.role_buffer_mode)))
 
         # Step 4: 仅在算法组件初始化时构建flat args
         self.flat_args = self._build_flat_args_for_algorithm()
@@ -428,6 +437,61 @@ class RoleBasedRunner(object):
         args.model_dir = self.cfg.pretrained.model_dir
         return args
 
+    def _get_curriculum_stage_for_update(self, update_idx):
+        """
+        功能:
+            根据当前update编号获取课程阶段。
+        输入:
+            update_idx (int): 当前训练update编号。
+        输出:
+            object: 当前课程阶段配置。
+        """
+        selected_stage = None
+        selected_start = None
+        for stage in list(self.cfg.curriculum.stages):
+            start_update = int(stage["start_update"])
+            if start_update <= int(update_idx) and (
+                selected_stage is None or start_update > int(selected_start)
+            ):
+                selected_stage = stage
+                selected_start = int(start_update)
+        if selected_stage is None:
+            raise ValueError("No curriculum stage is active at update {}.".format(int(update_idx)))
+        return selected_stage
+
+    def _maybe_log_curriculum_stage(self, update_idx):
+        """
+        功能:
+            当课程阶段发生变化时打印当前阶段配置摘要。
+        输入:
+            update_idx (int): 当前训练update编号。
+        输出:
+            无。
+        """
+        if not bool(self.cfg.curriculum.enable):
+            return
+        stage = self._get_curriculum_stage_for_update(update_idx=int(update_idx))
+        stage_name = str(stage["name"])
+        if self.curriculum_last_stage_name == stage_name:
+            return
+        self.curriculum_last_stage_name = stage_name
+        self._print_metric_table(
+            "CurriculumStage",
+            {
+                "update": str(int(update_idx)),
+                "stage": stage_name,
+                "start_ratio": "{:.4f}".format(float(stage["start_ratio"])),
+                "start_update": str(int(stage["start_update"])),
+                "world_size_choices": str(list(stage["world_size_choices"])),
+                "num_hunters_choices": str(list(stage["num_hunters_choices"])),
+                "hunters_in_zone_choices": str(list(stage["hunters_in_zone_choices"])),
+                "hunter_max_speed_choices": str(list(stage["hunter_max_speed_choices"])),
+                "target_speed_ratio_choices": str(list(stage["target_max_speed_ratio_choices"])),
+                "capture_dis_ratio_choices": str(list(stage["capture_dis_ratio_choices"])),
+                "target_policy_choices": str(list(stage["target_policy_source_choices"])),
+            },
+        )
+
     def run(self):
         """
         功能:
@@ -438,6 +502,9 @@ class RoleBasedRunner(object):
             无。
         """
         # Step 1: 预填充buffer初始观测
+        if bool(self.cfg.curriculum.enable) and hasattr(self.envs, "set_curriculum_update"):
+            self._maybe_log_curriculum_stage(0)
+            self.envs.set_curriculum_update(0)
         self.warmup()
 
         # Step 2: 计算总训练episode并开始计时
@@ -484,6 +551,10 @@ class RoleBasedRunner(object):
             "capture_rate": -np.inf,
         }
         for episode in range(episodes):
+            if bool(self.cfg.curriculum.enable) and hasattr(self.envs, "set_curriculum_update"):
+                self._maybe_log_curriculum_stage(int(episode))
+                self.envs.set_curriculum_update(int(episode))
+
             if self.use_linear_lr_decay:
                 for role_name in self.role_trainers.keys():
                     self.role_trainers[role_name].policy.lr_decay(episode, episodes)

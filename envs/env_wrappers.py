@@ -93,6 +93,14 @@ class DummyVecEnv():
         self.auto_reset_mode = str(mode)
         self.auto_reset_task_specs = task_specs
 
+    def set_curriculum_update(self, update_idx):
+        """
+        设置所有子环境当前课程学习update编号。
+        """
+        for env in self.envs:
+            if hasattr(env, "set_curriculum_update"):
+                env.set_curriculum_update(update_idx)
+
     def close(self):
         for env in self.envs:
             env.close()
