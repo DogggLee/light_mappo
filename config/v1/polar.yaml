@@ -128,29 +128,29 @@ curriculum:
     - name: warmup_small_map
       start_ratio: 0.0
       world_size_choices: [150.0]
-      num_hunters_choices: [3]
+      num_hunters_choices: [3, 4]
       hunters_in_zone_choices: [false]
       hunter_max_speed_choices: [20.0]
-      target_max_speed_ratio_choices: [0.6]
-      capture_dis_ratio_choices: [1.5]
+      target_max_speed_ratio_choices: [0.6, 0.8]
+      capture_dis_ratio_choices: [1.5, 2.0]
       target_policy_source_choices: ["patrol"]
       patrol_name_choices: ["all"]
       seed_range: [1, 99999]
 
     - name: medile
-      start_ratio: 0.1
+      start_ratio: 0.2
       world_size_choices: [120.0, 160.0, 200.0]
       num_hunters_choices: [1, 3, 5]
-      hunters_in_zone_choices: [true]
+      hunters_in_zone_choices: [false, true]
       hunter_max_speed_choices: [20.0]
-      target_max_speed_ratio_choices: [0.7, 0.8, 1.0, 1.2]
-      capture_dis_ratio_choices: [1.2]
+      target_max_speed_ratio_choices: [0.8, 1.0, 1.2]
+      capture_dis_ratio_choices: [1.2, 1.4]
       target_policy_source_choices: ["patrol", "random", "escape"]
       patrol_name_choices: ["all"]
       seed_range: [1, 99999]
 
     - name: difficult
-      start_ratio: 0.3
+      start_ratio: 0.5
       world_size_choices: [150.0, 200.0, 300.0]
       num_hunters_choices: [1, 3, 5, 7, 10]
       hunters_in_zone_choices: [false, true]

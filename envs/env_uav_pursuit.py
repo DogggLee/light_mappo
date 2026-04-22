@@ -1896,6 +1896,29 @@ class UAVPursuitEnv(object):
         self.world_size = float(max(1e-6, world_size))
         self.target.world_size = float(self.world_size)
 
+        zone_geometry_changed = False
+        if "collision_dis" in spec:
+            self.collision_dis = float(max(0.0, float(spec["collision_dis"])))
+            zone_geometry_changed = True
+        if "hunter_safe_dis" in spec:
+            hunter_safe_dis = float(max(0.0, float(spec["hunter_safe_dis"])))
+            for hunter in self.hunters:
+                hunter.safe_dis = float(max(self.collision_dis, hunter_safe_dis))
+            zone_geometry_changed = True
+        if "target_avoid_hunter_zone" in spec:
+            self.target_avoid_hunter_zone = bool(spec["target_avoid_hunter_zone"])
+        if "target_hunter_zone_min_dis" in spec:
+            self.target_hunter_zone_min_dis = float(max(0.0, float(spec["target_hunter_zone_min_dis"])))
+        if bool(zone_geometry_changed):
+            representative_hunter_safe_dis = max(float(hunter.safe_dis) for hunter in self.hunters)
+            self.hunter_zone_spacing = float(
+                max(self.collision_dis * 3.0, representative_hunter_safe_dis * 1.2, 1e-6)
+            )
+            self.hunter_zone_offsets = self._build_hunter_zone_offsets(
+                max_hunters_num=int(self.num_hunters),
+                spacing=float(self.hunter_zone_spacing),
+            )
+
         if "hunter_max_speed" in spec:
             hunter_max_speed = float(spec["hunter_max_speed"])
             for hunter in self.hunters:

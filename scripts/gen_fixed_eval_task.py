@@ -71,6 +71,36 @@ def parse_args() -> argparse.Namespace:
         metavar=("MIN", "MAX"),
         help="可选world_size采样区间[min,max]；未提供则不写入world_size字段。",
     )
+    parser.add_argument(
+        "--capture_dis",
+        type=float,
+        required=True,
+        help="写入每个任务的capture_dis。",
+    )
+    parser.add_argument(
+        "--collision_dis",
+        type=float,
+        required=True,
+        help="写入每个任务的collision_dis。",
+    )
+    parser.add_argument(
+        "--hunter_safe_dis",
+        type=float,
+        required=True,
+        help="写入每个任务的hunter_safe_dis，用于固定zone初始化间距。",
+    )
+    parser.add_argument(
+        "--hunter_max_speed",
+        type=float,
+        required=True,
+        help="写入每个任务的hunter_max_speed。",
+    )
+    parser.add_argument(
+        "--target_max_speed",
+        type=float,
+        required=True,
+        help="写入每个任务的target_max_speed。",
+    )
 
     # Step 2: 注册策略与巡逻相关参数
     parser.add_argument(
@@ -97,6 +127,18 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="false,true",
         help="基础环境中hunters_in_zone采样集合，逗号分隔，例如 false,true。",
+    )
+    parser.add_argument(
+        "--target_avoid_hunter_zone",
+        type=str,
+        required=True,
+        help="写入每个任务的target_avoid_hunter_zone，取true/false。",
+    )
+    parser.add_argument(
+        "--target_hunter_zone_min_dis",
+        type=float,
+        required=True,
+        help="写入每个任务的target_hunter_zone_min_dis。",
     )
 
     # Step 3: 注册随机种子控制参数
@@ -182,6 +224,22 @@ def _parse_bool_choices(raw_text: str, arg_name: str) -> list[bool]:
     if len(uniq) == 0:
         raise ValueError(f"No valid bool choices in {arg_name}")
     return uniq
+
+
+def _parse_bool_value(raw_text: str, arg_name: str) -> bool:
+    """
+    功能:
+        解析单个布尔参数。
+    输入:
+        raw_text (str): 布尔字符串。
+        arg_name (str): 参数名（用于报错信息）。
+    输出:
+        bool: 解析后的布尔值。
+    """
+    values = _parse_bool_choices(str(raw_text), arg_name)
+    if len(values) != 1:
+        raise ValueError(f"{arg_name} expects exactly one bool value")
+    return bool(values[0])
 
 
 def _resolve_hunter_count_choices(args: argparse.Namespace) -> list[int]:
@@ -312,6 +370,18 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
         if world_max < world_min:
             raise ValueError("--world_size MAX must be >= MIN")
         world_size_range = (world_min, world_max)
+    if float(args.capture_dis) <= 0.0:
+        raise ValueError("--capture_dis must be > 0")
+    if float(args.collision_dis) < 0.0:
+        raise ValueError("--collision_dis must be >= 0")
+    if float(args.hunter_safe_dis) < 0.0:
+        raise ValueError("--hunter_safe_dis must be >= 0")
+    if float(args.hunter_max_speed) <= 0.0:
+        raise ValueError("--hunter_max_speed must be > 0")
+    if float(args.target_max_speed) <= 0.0:
+        raise ValueError("--target_max_speed must be > 0")
+    if float(args.target_hunter_zone_min_dis) < 0.0:
+        raise ValueError("--target_hunter_zone_min_dis must be >= 0")
 
     # Step 2: 解析策略候选与巡逻路线候选
     policy_choices = [x.strip().lower() for x in str(args.target_policy_choices).split(",") if x.strip()]
@@ -321,6 +391,10 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
     if "patrol" in policy_choices and len(patrol_route_pool) == 0:
         raise ValueError("Patrol policy requested but no valid patrol route names found")
     hunters_in_zone_choices = _parse_bool_choices(str(args.hunters_in_zone_choices), "--hunters_in_zone_choices")
+    target_avoid_hunter_zone = _parse_bool_value(
+        str(args.target_avoid_hunter_zone),
+        "--target_avoid_hunter_zone",
+    )
 
     # Step 3: 先采样基础环境，再与hunter数量集合做笛卡尔组合
     rng = random.Random(int(args.rand_seed))
@@ -330,11 +404,18 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
         route_path, route_name = rng.choice(patrol_route_pool)
         base_spec = {
             "seed": int(int(args.seed_start) + idx * int(args.seed_step)),
+            "capture_dis": float(args.capture_dis),
+            "collision_dis": float(args.collision_dis),
+            "hunter_safe_dis": float(args.hunter_safe_dis),
+            "hunter_max_speed": float(args.hunter_max_speed),
+            "target_max_speed": float(args.target_max_speed),
             "target_policy_source": str(policy),
             "target_patrol_path": str(route_path),
             "target_route_id": int(args.target_route_id),
             "target_patrol_names": [str(route_name)],
             "hunters_in_zone": bool(rng.choice(hunters_in_zone_choices)),
+            "target_avoid_hunter_zone": bool(target_avoid_hunter_zone),
+            "target_hunter_zone_min_dis": float(args.target_hunter_zone_min_dis),
         }
         if world_size_range is not None:
             base_spec["world_size"] = float(rng.uniform(float(world_size_range[0]), float(world_size_range[1])))
@@ -406,6 +487,13 @@ def _dump_grouped_yaml(output_path: Path, tasks: list[dict]) -> None:
         "hunters_in_zone",
         "world_size",
         "seed",
+        "capture_dis",
+        "collision_dis",
+        "hunter_safe_dis",
+        "hunter_max_speed",
+        "target_max_speed",
+        "target_avoid_hunter_zone",
+        "target_hunter_zone_min_dis",
         "target_policy_source",
         "target_patrol_path",
         "target_patrol_names",

@@ -29,6 +29,8 @@ parameters:
   schedule.use_linear_lr_decay:
     values: [true]
   domain_randomization.train_split.enable:
+    values: [false]
+  curriculum.enable: 
     values: [true]
 
 conditional_ignore:
