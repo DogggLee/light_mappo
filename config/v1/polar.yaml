@@ -1,6 +1,6 @@
 exp:
   algorithm_name: rmappo
-  experiment_name: Curriculum-close-spread
+  experiment_name: Curriculum-spread-spreadCap
   seed: 1
   num_env_steps: 4000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -53,7 +53,7 @@ reward:
   
   base_far_scale: 0.5
   base_near_scale: 2.0
-  base_streak_scale: 0.2
+  base_streak_scale: 0.8
   base_streak_cap: 30
   base_reward_inside_escape_scale: 0.4  # d<=escape_radius时base_reward缩放，避免与escape_gap冲突
 
@@ -73,8 +73,9 @@ reward:
 
   # Capture reward
   hunter_capture_reward: 150.0
+  hunter_capture_help_reward: 30.0
   target_captured_penalty: 12.0
-  capture_reward_allocation: alone  # Choices: ["team", "alone", "encircle", "spread"]
+  capture_reward_allocation: spread  # Choices: ["team", "alone", "encircle", "spread"]
 
   # Speed Penalty
   speed_penalty: 0.2
@@ -150,7 +151,7 @@ curriculum:
       seed_range: [1, 99999]
 
     - name: difficult
-      start_ratio: 0.5
+      start_ratio: 0.4
       world_size_choices: [150.0, 200.0, 300.0]
       num_hunters_choices: [1, 3, 5, 7, 10]
       hunters_in_zone_choices: [false, true]

@@ -1479,6 +1479,7 @@ class UAVPursuitEnv(object):
         self.spread_reward_enable = bool(reward_cfg.spread_reward_enable)
         self.spread_reward_coef = float(reward_cfg.spread_reward_coef)
         self.hunter_capture_reward = float(reward_cfg.hunter_capture_reward)
+        self.hunter_capture_help_reward = float(reward_cfg.hunter_capture_help_reward)
         self.target_captured_penalty = float(reward_cfg.target_captured_penalty)
         capture_reward_allocation = str(reward_cfg.capture_reward_allocation).lower()
         if capture_reward_allocation == "naive":
@@ -3230,7 +3231,7 @@ class UAVPursuitEnv(object):
             List[int]: 参与围捕的Hunter索引列表。
         """
         encircle_ids = []
-        escape_radius = float(getattr(self.target, "escape_dis", 0.0))
+        capture_radius = float(max(self.capture_dis, 0.0))
         step_cache = self._get_step_cache()
         hunter_valid_mask = step_cache["hunter_valid_mask"]
         hunter_to_target_dist = step_cache["hunter_to_target_dist"]
@@ -3238,7 +3239,7 @@ class UAVPursuitEnv(object):
             if not bool(hunter_valid_mask[hid]):
                 continue
             dist = float(hunter_to_target_dist[hid])
-            if escape_radius > 0.0 and dist > escape_radius:
+            if capture_radius > 0.0 and dist > capture_radius:
                 continue
             encircle_ids.append(int(hid))
 
@@ -3328,9 +3329,17 @@ class UAVPursuitEnv(object):
             hunter_valid_mask = step_cache["hunter_valid_mask"]
             hunter_to_target_dist = step_cache["hunter_to_target_dist"]
             hunter_to_target_unit = step_cache["hunter_to_target_unit"]
+            captor_set = set(int(hid) for hid in captor_ids)
+            for hid in captor_ids:
+                hid_i = int(hid)
+                if hid_i < 0 or hid_i >= self.num_hunters:
+                    continue
+                capture_reward[hid_i] = float(self.hunter_capture_reward)
             eligible_ids = []
             for hid in range(self.num_hunters):
                 if not bool(hunter_valid_mask[hid]):
+                    continue
+                if int(hid) in captor_set:
                     continue
                 eligible_ids.append(int(hid))
             if len(eligible_ids) > 0:
@@ -3363,13 +3372,9 @@ class UAVPursuitEnv(object):
                     weights = np.ones(len(eligible_ids), dtype=np.float32) / float(len(eligible_ids))
                 else:
                     weights = raw_scores / score_sum
-
-                if bool(self.hunter_count_balance_enable):
-                    total_pool = float(self.hunter_capture_reward) * float(self.hunter_count_balance_ref_hunters)
-                else:
-                    total_pool = float(self.hunter_capture_reward) * float(len(eligible_ids))
+                helper_pool = float(self.hunter_capture_help_reward) * float(len(eligible_ids))
                 for idx, hid in enumerate(eligible_ids):
-                    capture_reward[int(hid)] = float(total_pool) * float(weights[idx])
+                    capture_reward[int(hid)] = float(helper_pool) * float(weights[idx])
         else:
             for hid in captor_ids:
                 capture_reward[int(hid)] = float(self.hunter_capture_reward)
@@ -3791,6 +3796,7 @@ class UAVPursuitEnv(object):
         dist_scale = max(float(self.world_size), 1e-6)
         capture_dis_safe = max(float(self.capture_dis), 1e-6)
         streak_cap = max(1, int(self.base_streak_cap))
+        streak_capture_bonus = 2
         hunter_d = []
         streak_used = []
 
@@ -3806,22 +3812,21 @@ class UAVPursuitEnv(object):
                 d_now = float(hunter_to_target_dist[hid])
                 hunter_d.append(d_now)
                 hist = self.hunter_distance_histories[hid]
+
                 # 仅在未进入capture范围时计算delta-window base reward。
                 if d_now > capture_dis_safe:
                     d_prev_avg = float(np.mean(hist)) if len(hist) > 0 else d_now
                     delta_norm = float(np.clip((d_prev_avg - d_now) / norm_scale, -1.0, 1.0))
                     hunter_base_reward[hid] = float(self.base_delta_hunter_scale) * delta_norm
-                    if (
-                        float(getattr(self.target, "escape_dis", 0.0)) > 0.0
-                        and d_now <= float(self.target.escape_dis)
-                    ):
+                    if d_now <= capture_dis_safe:
                         hunter_base_reward[hid] *= float(self.base_reward_inside_escape_scale)
                     delta_norm_values.append(delta_norm)
                 else:
                     hunter_base_reward[hid] = 0.0
                 hist.append(d_now)
 
-                streak_i = int(min(int(self.capture_counter[hid]), streak_cap))
+                raw_counter = int(self.capture_counter[hid])
+                streak_i = int(min((raw_counter + streak_capture_bonus) if raw_counter > 0 else 0, streak_cap))
                 streak_used.append(streak_i)
                 hunter_streak_reward[hid] = self.base_streak_scale * float(streak_i)
 
@@ -3830,10 +3835,7 @@ class UAVPursuitEnv(object):
                 mean_delta_norm = float(np.mean(delta_norm_values)) if len(delta_norm_values) > 0 else 0.0
                 target_base_reward[self.target_index] = -float(self.base_delta_target_scale) * mean_delta_norm
                 min_d_for_scale = min(hunter_d) if len(hunter_d) > 0 else float("inf")
-                if (
-                    float(getattr(self.target, "escape_dis", 0.0)) > 0.0
-                    and min_d_for_scale <= float(self.target.escape_dis)
-                ):
+                if min_d_for_scale <= capture_dis_safe:
                     target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
                 avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
                 target_streak_reward[self.target_index] = -self.base_streak_scale * avg_streak
@@ -3866,13 +3868,11 @@ class UAVPursuitEnv(object):
                 else:
                     far_ratio = (d - capture_dis_safe) / dist_scale
                     hunter_base_reward[i] = -self.base_far_scale * far_ratio * base_scale
-                if (
-                    float(getattr(self.target, "escape_dis", 0.0)) > 0.0
-                    and d <= float(self.target.escape_dis)
-                ):
+                if d <= capture_dis_safe:
                     hunter_base_reward[i] *= float(self.base_reward_inside_escape_scale)
 
-                streak_i = int(min(int(self.capture_counter[i]), streak_cap))
+                raw_counter = int(self.capture_counter[i])
+                streak_i = int(min((raw_counter + streak_capture_bonus) if raw_counter > 0 else 0, streak_cap))
                 streak_used.append(streak_i)
                 hunter_streak_reward[i] = self.base_streak_scale * float(streak_i)
 
@@ -3884,10 +3884,7 @@ class UAVPursuitEnv(object):
                 else:
                     far_ratio_t = (min_d - capture_dis_safe) / dist_scale
                     target_base_reward[self.target_index] = self.base_far_scale * far_ratio_t
-                if (
-                    float(getattr(self.target, "escape_dis", 0.0)) > 0.0
-                    and min_d <= float(self.target.escape_dis)
-                ):
+                if min_d <= capture_dis_safe:
                     target_base_reward[self.target_index] *= float(self.base_reward_inside_escape_scale)
 
                 avg_streak = float(np.mean(streak_used)) if streak_used else 0.0
@@ -4406,15 +4403,15 @@ class UAVPursuitEnv(object):
         topk_ids = {hid for _, hid in dist_pairs[:topk]}
         self_is_topk = 1.0 if int(obs_idx) in topk_ids else 0.0
 
-        # Step 2: 统计与Target距离小于escape_radius的Hunter数量（潜在参与包围数量）。
-        escape_radius = float(max(0.0, self.target.escape_dis))
-        if escape_radius <= 0.0:
+        # Step 2: 统计与Target距离小于capture_dis的Hunter数量（潜在参与抓捕数量）。
+        capture_radius = float(max(0.0, self.capture_dis))
+        if capture_radius <= 0.0:
             hunters_in_escape_radius_count = 0.0
         else:
             in_radius_count = 0
             for _, hid in dist_pairs:
                 dist_val = float(np.linalg.norm(self.hunters[hid].position - self.target.position))
-                if dist_val < escape_radius:
+                if dist_val < capture_radius:
                     in_radius_count += 1
             hunters_in_escape_radius_count = float(in_radius_count)
 

@@ -1,10 +1,10 @@
 base_config: config/v1/polar.yaml
 output_dir: results/sweeps/polar
-max_parallel: 2
+max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: delBase_spread_sweep
+env_name: Curriculum_delBase_spreadCap_sweep
 progress_interval_sec: 300
 progress_topk: 3
 
@@ -18,14 +18,16 @@ parameters:
   
   reward.mi_diversity_enable:
     values: [false]
+  reward.mi_diversity_coef: 
+    values: [0.1, 1.0]
 
   reward.spread_reward_enable:
     values: [true]
   reward.spread_reward_coef:
-    values: [1.0, 2.0, 4.0]
+    values: [0.5, 2.0, 4.0]
   
   optim.lr:
-    values: [0.0005, 0.001]
+    values: [0.0002, 0.0005, 0.001]
   schedule.use_linear_lr_decay:
     values: [true]
   domain_randomization.train_split.enable:
@@ -44,9 +46,14 @@ conditional_ignore:
       - reward.base_far_scale
       - reward.base_near_scale
   - when:
+      reward.mi_diversity_enable: false
+    ignore:
+      - reward.mi_diversity_coef
+  - when:
       reward.spread_reward_enable: false
     ignore:
       - reward.spread_reward_coef
+
 
 plot:
   enabled: true

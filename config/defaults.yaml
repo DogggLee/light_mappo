@@ -209,6 +209,7 @@ reward:
 
   # Capture reward
   hunter_capture_reward: 15.0
+  hunter_capture_help_reward: 5.0
   target_captured_penalty: 12.0
   capture_reward_allocation: team  # Choices: ["team", "alone", "encircle", "spread"]
 
