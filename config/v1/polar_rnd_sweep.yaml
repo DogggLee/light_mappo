@@ -1,0 +1,61 @@
+base_config: config/v1/polar_rnd.yaml
+output_dir: results/sweeps/polar_rnd
+max_parallel: 4
+python: python
+train_script: train/train.py
+time_stat: false
+env_name: Random_delBase_spreadCap_sweep
+progress_interval_sec: 300
+progress_topk: 3
+
+parameters:
+  env.action_frame:
+    values: [local]
+  env.hunter_collision_state_mode:
+    values: [collided]
+  reward.base_reward_mode:
+    values: [delta_window]
+  
+  reward.mi_diversity_enable:
+    values: [false]
+  reward.mi_diversity_coef: 
+    values: [0.1, 1.0]
+
+  reward.spread_reward_enable:
+    values: [true]
+  reward.spread_reward_coef:
+    values: [0.5, 2.0, 4.0]
+  
+  optim.lr:
+    values: [0.0002, 0.0005, 0.001]
+  schedule.use_linear_lr_decay:
+    values: [true]
+  domain_randomization.train_split.enable:
+    values: [false]
+  curriculum.enable: 
+    values: [true]
+
+conditional_ignore:
+  - when:
+      reward.base_reward_mode: legacy
+    ignore:
+      - reward.base_delta_*
+  - when:
+      reward.base_reward_mode: delta_window
+    ignore:
+      - reward.base_far_scale
+      - reward.base_near_scale
+  - when:
+      reward.mi_diversity_enable: false
+    ignore:
+      - reward.mi_diversity_coef
+  - when:
+      reward.spread_reward_enable: false
+    ignore:
+      - reward.spread_reward_coef
+
+
+plot:
+  enabled: true
+  buckets: [fixed_zone_false, fixed_zone_true]
+  metrics: [capture_rate, alive_rate, eval_reward]
