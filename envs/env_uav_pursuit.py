@@ -2010,10 +2010,22 @@ class UAVPursuitEnv(object):
             hunter_max_speed = float(spec["hunter_max_speed"])
             for hunter in self.hunters:
                 hunter.max_speed = float(max(1e-6, hunter_max_speed))
+        if "target_max_speed" in spec and "target_max_speed_ratio" in spec:
+            raise ValueError("task_spec cannot contain both target_max_speed and target_max_speed_ratio")
+        if "target_max_speed_ratio" in spec:
+            representative_hunter_speed = float(self.hunters[0].max_speed)
+            self.target.max_speed = float(
+                max(1e-6, representative_hunter_speed * float(spec["target_max_speed_ratio"]))
+            )
         if "target_max_speed" in spec:
             self.target.max_speed = float(max(1e-6, float(spec["target_max_speed"])))
         if "capture_dis" in spec:
             self.capture_dis = float(max(1e-6, float(spec["capture_dis"])))
+        if "capture_step" in spec:
+            capture_step = int(spec["capture_step"])
+            if int(capture_step) <= 0:
+                raise ValueError("task_spec.capture_step must be > 0")
+            self.capture_step = int(capture_step)
 
         active_num_hunters = int(spec.get("num_hunters", self.num_hunters))
         active_num_hunters = int(np.clip(active_num_hunters, 1, self.num_hunters))
@@ -2319,7 +2331,6 @@ class UAVPursuitEnv(object):
         seed_max = int(max(int(seed_range[0]), int(seed_range[1])))
         seed_val = int(self.rng.randint(seed_min, seed_max + 1))
 
-        target_max_speed = float(hunter_max_speed * target_max_speed_ratio)
         capture_dis = float(hunter_max_speed * capture_dis_ratio)
         return {
             "curriculum_stage": str(stage_name),
@@ -2329,7 +2340,6 @@ class UAVPursuitEnv(object):
             "world_size": float(world_size),
             "hunter_max_speed": float(hunter_max_speed),
             "target_max_speed_ratio": float(target_max_speed_ratio),
-            "target_max_speed": float(target_max_speed),
             "capture_dis_ratio": float(capture_dis_ratio),
             "capture_dis": float(capture_dis),
             "target_policy_source": str(target_policy_source),

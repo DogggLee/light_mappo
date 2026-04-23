@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import random
 from pathlib import Path
@@ -72,10 +73,40 @@ def parse_args() -> argparse.Namespace:
         help="可选world_size采样区间[min,max]；未提供则不写入world_size字段。",
     )
     parser.add_argument(
+        "--world_size_choices",
+        type=str,
+        default=None,
+        help="离散world_size集合，逗号分隔；与--world_size二选一。",
+    )
+    parser.add_argument(
         "--capture_dis",
         type=float,
-        required=True,
+        default=None,
         help="写入每个任务的capture_dis。",
+    )
+    parser.add_argument(
+        "--capture_dis_choices",
+        type=str,
+        default=None,
+        help="离散capture_dis集合，逗号分隔；与--capture_dis/--capture_dis_ratio_choices二选一。",
+    )
+    parser.add_argument(
+        "--capture_dis_ratio_choices",
+        type=str,
+        default=None,
+        help="离散capture_dis/hunter_max_speed比例集合，逗号分隔。",
+    )
+    parser.add_argument(
+        "--capture_step",
+        type=int,
+        default=None,
+        help="写入每个任务的capture_step。",
+    )
+    parser.add_argument(
+        "--capture_step_choices",
+        type=str,
+        default=None,
+        help="离散capture_step集合，逗号分隔；与--capture_step二选一。",
     )
     parser.add_argument(
         "--collision_dis",
@@ -92,14 +123,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hunter_max_speed",
         type=float,
-        required=True,
+        default=None,
         help="写入每个任务的hunter_max_speed。",
+    )
+    parser.add_argument(
+        "--hunter_max_speed_choices",
+        type=str,
+        default=None,
+        help="离散hunter_max_speed集合，逗号分隔；与--hunter_max_speed二选一。",
     )
     parser.add_argument(
         "--target_max_speed",
         type=float,
-        required=True,
+        default=None,
         help="写入每个任务的target_max_speed。",
+    )
+    parser.add_argument(
+        "--target_max_speed_ratio_choices",
+        type=str,
+        default=None,
+        help="离散target_max_speed/hunter_max_speed比例集合，逗号分隔。",
     )
 
     # Step 2: 注册策略与巡逻相关参数
@@ -160,6 +203,11 @@ def parse_args() -> argparse.Namespace:
         default=2026,
         help="生成器随机种子（用于hunter/world_size/策略采样）。",
     )
+    parser.add_argument(
+        "--factorial",
+        action="store_true",
+        help="使用离散因子的笛卡尔组合生成base环境；未开启时按num_base_envs随机采样。",
+    )
     return parser.parse_args()
 
 
@@ -183,6 +231,51 @@ def _parse_int_choices(raw_text: str, arg_name: str) -> list[int]:
     if len(uniq) == 0:
         raise ValueError(f"No valid integer choices in {arg_name}")
     return uniq
+
+
+def _parse_float_choices(raw_text: str, arg_name: str) -> list[float]:
+    """
+    功能:
+        解析逗号分隔浮点列表并去重排序。
+    输入:
+        raw_text (str): 逗号分隔字符串。
+        arg_name (str): 参数名（用于报错信息）。
+    输出:
+        list[float]: 去重排序后的浮点列表。
+    """
+    values: list[float] = []
+    for token in str(raw_text).split(","):
+        s = token.strip()
+        if not s:
+            continue
+        values.append(float(s))
+    uniq = sorted(set(values))
+    if len(uniq) == 0:
+        raise ValueError(f"No valid float choices in {arg_name}")
+    return uniq
+
+
+def _resolve_choice_pool(single_value, choices_text, arg_name: str, value_type):
+    """
+    功能:
+        将单值参数或choices参数解析为候选池。
+    输入:
+        single_value: 单值参数。
+        choices_text: 逗号分隔候选字符串。
+        arg_name (str): 参数名（用于报错信息）。
+        value_type: int或float。
+    输出:
+        list: 候选值列表。
+    """
+    if single_value is not None and choices_text is not None:
+        raise ValueError(f"Use only one of --{arg_name} and --{arg_name}_choices")
+    if choices_text is not None:
+        if value_type is int:
+            return _parse_int_choices(str(choices_text), f"--{arg_name}_choices")
+        return _parse_float_choices(str(choices_text), f"--{arg_name}_choices")
+    if single_value is not None:
+        return [value_type(single_value)]
+    return None
 
 
 def _parse_bool_choices(raw_text: str, arg_name: str) -> list[bool]:
@@ -363,23 +456,85 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
     # Step 1: 参数有效性校验
     num_base_envs = _resolve_num_base_envs(args)
     hunter_count_choices = _resolve_hunter_count_choices(args)
+    if args.world_size is not None and args.world_size_choices is not None:
+        raise ValueError("Use only one of --world_size and --world_size_choices")
     world_size_range = None
+    world_size_pool = None
     if args.world_size is not None:
         world_min = float(args.world_size[0])
         world_max = float(args.world_size[1])
         if world_max < world_min:
             raise ValueError("--world_size MAX must be >= MIN")
         world_size_range = (world_min, world_max)
-    if float(args.capture_dis) <= 0.0:
-        raise ValueError("--capture_dis must be > 0")
+    if args.world_size_choices is not None:
+        world_size_pool = _parse_float_choices(str(args.world_size_choices), "--world_size_choices")
+        if any(float(x) <= 0.0 for x in world_size_pool):
+            raise ValueError("--world_size_choices values must be > 0")
+    if bool(args.factorial) and world_size_range is not None:
+        raise ValueError("--factorial requires discrete --world_size_choices instead of --world_size range")
+
+    capture_dis_pool = _resolve_choice_pool(
+        args.capture_dis,
+        args.capture_dis_choices,
+        "capture_dis",
+        float,
+    )
+    capture_dis_ratio_pool = None
+    if args.capture_dis_ratio_choices is not None:
+        if capture_dis_pool is not None:
+            raise ValueError("Use only one of --capture_dis/--capture_dis_choices and --capture_dis_ratio_choices")
+        capture_dis_ratio_pool = _parse_float_choices(
+            str(args.capture_dis_ratio_choices),
+            "--capture_dis_ratio_choices",
+        )
+        if any(float(x) <= 0.0 for x in capture_dis_ratio_pool):
+            raise ValueError("--capture_dis_ratio_choices values must be > 0")
+    if capture_dis_pool is None and capture_dis_ratio_pool is None:
+        raise ValueError("Please provide --capture_dis, --capture_dis_choices, or --capture_dis_ratio_choices")
+    if capture_dis_pool is not None and any(float(x) <= 0.0 for x in capture_dis_pool):
+        raise ValueError("--capture_dis values must be > 0")
+
+    capture_step_pool = _resolve_choice_pool(
+        args.capture_step,
+        args.capture_step_choices,
+        "capture_step",
+        int,
+    )
+    if capture_step_pool is not None and any(int(x) <= 0 for x in capture_step_pool):
+        raise ValueError("--capture_step values must be > 0")
     if float(args.collision_dis) < 0.0:
         raise ValueError("--collision_dis must be >= 0")
     if float(args.hunter_safe_dis) < 0.0:
         raise ValueError("--hunter_safe_dis must be >= 0")
-    if float(args.hunter_max_speed) <= 0.0:
+
+    hunter_max_speed_pool = _resolve_choice_pool(
+        args.hunter_max_speed,
+        args.hunter_max_speed_choices,
+        "hunter_max_speed",
+        float,
+    )
+    if hunter_max_speed_pool is None:
+        raise ValueError("Please provide --hunter_max_speed or --hunter_max_speed_choices")
+    if any(float(x) <= 0.0 for x in hunter_max_speed_pool):
         raise ValueError("--hunter_max_speed must be > 0")
-    if float(args.target_max_speed) <= 0.0:
+
+    target_max_speed_pool = None
+    target_max_speed_ratio_pool = None
+    if args.target_max_speed is not None:
+        target_max_speed_pool = [float(args.target_max_speed)]
+    if args.target_max_speed_ratio_choices is not None:
+        target_max_speed_ratio_pool = _parse_float_choices(
+            str(args.target_max_speed_ratio_choices),
+            "--target_max_speed_ratio_choices",
+        )
+    if target_max_speed_pool is not None and target_max_speed_ratio_pool is not None:
+        raise ValueError("Use only one of --target_max_speed and --target_max_speed_ratio_choices")
+    if target_max_speed_pool is None and target_max_speed_ratio_pool is None:
+        raise ValueError("Please provide --target_max_speed or --target_max_speed_ratio_choices")
+    if target_max_speed_pool is not None and any(float(x) <= 0.0 for x in target_max_speed_pool):
         raise ValueError("--target_max_speed must be > 0")
+    if target_max_speed_ratio_pool is not None and any(float(x) <= 0.0 for x in target_max_speed_ratio_pool):
+        raise ValueError("--target_max_speed_ratio_choices values must be > 0")
     if float(args.target_hunter_zone_min_dis) < 0.0:
         raise ValueError("--target_hunter_zone_min_dis must be >= 0")
 
@@ -399,26 +554,93 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
     # Step 3: 先采样基础环境，再与hunter数量集合做笛卡尔组合
     rng = random.Random(int(args.rand_seed))
     base_specs: list[dict] = []
-    for idx in range(int(num_base_envs)):
-        policy = rng.choice(policy_choices)
+
+    if bool(args.factorial):
+        world_values = world_size_pool if world_size_pool is not None else [None]
+        capture_values = capture_dis_pool if capture_dis_pool is not None else [None]
+        capture_ratio_values = capture_dis_ratio_pool if capture_dis_ratio_pool is not None else [None]
+        capture_step_values = capture_step_pool if capture_step_pool is not None else [None]
+        target_speed_values = target_max_speed_pool if target_max_speed_pool is not None else [None]
+        target_speed_ratio_values = (
+            target_max_speed_ratio_pool if target_max_speed_ratio_pool is not None else [None]
+        )
+        factor_rows = list(
+            itertools.product(
+                world_values,
+                capture_values,
+                capture_ratio_values,
+                capture_step_values,
+                hunter_max_speed_pool,
+                target_speed_values,
+                target_speed_ratio_values,
+                policy_choices,
+                hunters_in_zone_choices,
+            )
+        )
+    else:
+        factor_rows = []
+        for _ in range(int(num_base_envs)):
+            sampled_world_size = None
+            if world_size_range is not None:
+                sampled_world_size = float(rng.uniform(float(world_size_range[0]), float(world_size_range[1])))
+            elif world_size_pool is not None:
+                sampled_world_size = float(rng.choice(world_size_pool))
+            factor_rows.append(
+                (
+                    sampled_world_size,
+                    None if capture_dis_pool is None else float(rng.choice(capture_dis_pool)),
+                    None if capture_dis_ratio_pool is None else float(rng.choice(capture_dis_ratio_pool)),
+                    None if capture_step_pool is None else int(rng.choice(capture_step_pool)),
+                    float(rng.choice(hunter_max_speed_pool)),
+                    None if target_max_speed_pool is None else float(rng.choice(target_max_speed_pool)),
+                    None if target_max_speed_ratio_pool is None else float(rng.choice(target_max_speed_ratio_pool)),
+                    str(rng.choice(policy_choices)),
+                    bool(rng.choice(hunters_in_zone_choices)),
+                )
+            )
+
+    for idx, row in enumerate(factor_rows):
+        (
+            world_size,
+            capture_dis,
+            capture_dis_ratio,
+            capture_step,
+            hunter_max_speed,
+            target_max_speed,
+            target_max_speed_ratio,
+            policy,
+            hunters_in_zone,
+        ) = row
         route_path, route_name = rng.choice(patrol_route_pool)
+        resolved_capture_dis = (
+            float(capture_dis)
+            if capture_dis is not None
+            else float(float(hunter_max_speed) * float(capture_dis_ratio))
+        )
         base_spec = {
             "seed": int(int(args.seed_start) + idx * int(args.seed_step)),
-            "capture_dis": float(args.capture_dis),
+            "capture_dis": float(resolved_capture_dis),
             "collision_dis": float(args.collision_dis),
             "hunter_safe_dis": float(args.hunter_safe_dis),
-            "hunter_max_speed": float(args.hunter_max_speed),
-            "target_max_speed": float(args.target_max_speed),
+            "hunter_max_speed": float(hunter_max_speed),
             "target_policy_source": str(policy),
             "target_patrol_path": str(route_path),
             "target_route_id": int(args.target_route_id),
             "target_patrol_names": [str(route_name)],
-            "hunters_in_zone": bool(rng.choice(hunters_in_zone_choices)),
+            "hunters_in_zone": bool(hunters_in_zone),
             "target_avoid_hunter_zone": bool(target_avoid_hunter_zone),
             "target_hunter_zone_min_dis": float(args.target_hunter_zone_min_dis),
         }
-        if world_size_range is not None:
-            base_spec["world_size"] = float(rng.uniform(float(world_size_range[0]), float(world_size_range[1])))
+        if capture_dis_ratio is not None:
+            base_spec["capture_dis_ratio"] = float(capture_dis_ratio)
+        if capture_step is not None:
+            base_spec["capture_step"] = int(capture_step)
+        if target_max_speed is not None:
+            base_spec["target_max_speed"] = float(target_max_speed)
+        if target_max_speed_ratio is not None:
+            base_spec["target_max_speed_ratio"] = float(target_max_speed_ratio)
+        if world_size is not None:
+            base_spec["world_size"] = float(world_size)
         base_specs.append(base_spec)
 
     tasks: list[dict] = []
@@ -454,12 +676,21 @@ def main() -> None:
 
     # Step 3: 打印生成摘要
     print(
-        "Generated {} fixed eval tasks to {} (num_base_envs={}, hunter_count_choices={}, world_size={}).".format(
+        "Generated {} fixed eval tasks to {} (num_base_envs={}, hunter_count_choices={}, world_size={}, factorial={}).".format(
             int(len(tasks)),
             str(args.output),
             int(_resolve_num_base_envs(args)),
             _resolve_hunter_count_choices(args),
-            "disabled" if args.world_size is None else f"[{float(args.world_size[0])}, {float(args.world_size[1])}]",
+            (
+                "disabled"
+                if args.world_size is None and args.world_size_choices is None
+                else (
+                    str(args.world_size_choices)
+                    if args.world_size_choices is not None
+                    else f"[{float(args.world_size[0])}, {float(args.world_size[1])}]"
+                )
+            ),
+            bool(args.factorial),
         )
     )
 
@@ -488,10 +719,13 @@ def _dump_grouped_yaml(output_path: Path, tasks: list[dict]) -> None:
         "world_size",
         "seed",
         "capture_dis",
+        "capture_dis_ratio",
+        "capture_step",
         "collision_dis",
         "hunter_safe_dis",
         "hunter_max_speed",
         "target_max_speed",
+        "target_max_speed_ratio",
         "target_avoid_hunter_zone",
         "target_hunter_zone_min_dis",
         "target_policy_source",

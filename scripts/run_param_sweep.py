@@ -10,6 +10,8 @@ max_parallel: 2
 python: python
 train_script: train/train.py
 time_stat: false
+final_test_eval: async        # Choices: off/sync/async
+final_test_eval_model_glob: best_eval_capture_rate
 
 parameters:
   env.action_frame:
@@ -537,6 +539,12 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
     py_bin = str(sweep_cfg.get("python", "python"))
     train_script = str(sweep_cfg.get("train_script", "train/train.py"))
     time_stat = bool(sweep_cfg.get("time_stat", False))
+    final_test_eval = str(sweep_cfg.get("final_test_eval", "off")).lower()
+    final_test_eval_model_glob = str(
+        sweep_cfg.get("final_test_eval_model_glob", "best_eval_capture_rate")
+    )
+    if final_test_eval not in ("off", "sync", "async"):
+        raise ValueError("final_test_eval must be one of off/sync/async")
     progress_interval_sec = float(sweep_cfg.get("progress_interval_sec", 20.0))
     progress_topk = int(sweep_cfg.get("progress_topk", 5))
     logs_dir = output_dir / "launcher_logs"
@@ -950,6 +958,9 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
             cmd = [py_bin, train_script, "--config_file", item["config_path"]]
             if time_stat:
                 cmd.append("--time_stat")
+            if final_test_eval != "off":
+                cmd.extend(["--final_test_eval", final_test_eval])
+                cmd.extend(["--final_test_eval_model_glob", final_test_eval_model_glob])
             log_f = open(log_path, "w", encoding="utf-8", buffering=1)
             proc = subprocess.Popen(
                 cmd,

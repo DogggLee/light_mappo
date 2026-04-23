@@ -14,6 +14,7 @@ sys.path.append(parent_dir)
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 import copy
 
@@ -266,8 +267,9 @@ def _print_domain_randomization_settings(
     if merged_cfg.eval.fixed_tasks_file is not None:
         eval_source = str(merged_cfg.eval.fixed_tasks_file)
     print(
-        "[EvalConfig] fixed_task_source={}, fixed_tasks={}, train_max_hunters_num={}, eval_max_hunters_num={}, eval_episode_length={}, dual_eval_target_learn={}".format(
+        "[EvalConfig] fixed_task_source={}, test_fixed_task_source={}, fixed_tasks={}, train_max_hunters_num={}, eval_max_hunters_num={}, eval_episode_length={}, dual_eval_target_learn={}".format(
             eval_source,
+            merged_cfg.eval.test_fixed_tasks_file,
             0 if eval_task_specs is None else int(len(eval_task_specs)),
             int(train_max_hunters_num),
             int(eval_max_hunters_num),
@@ -550,6 +552,83 @@ parser.add_argument(
     action="store_true",
     help="Enable detailed per-episode runtime statistics and run runner.run_time_stat()",
 )
+parser.add_argument(
+    "--final_test_eval",
+    choices=["off", "sync", "async"],
+    default="off",
+    help="Run eval.test_fixed_tasks_file after training: off, sync, or async.",
+)
+parser.add_argument(
+    "--final_test_eval_model_glob",
+    type=str,
+    default="best_eval_capture_rate",
+    help="Model glob passed to train/eval.py for final test eval.",
+)
+
+
+def _launch_final_test_eval(args, merged_cfg, run_dir):
+    """
+    功能:
+        训练结束后按需启动基于eval.test_fixed_tasks_file的完整测试集评估。
+    输入:
+        args (argparse.Namespace): 训练入口命令行参数。
+        merged_cfg (EasyDict): 已合并配置。
+        run_dir (Path): 当前训练run目录。
+    输出:
+        subprocess.Popen | None: async模式返回子进程对象，其余模式返回None。
+    """
+    mode = str(args.final_test_eval).lower()
+    if mode == "off":
+        return None
+    if merged_cfg.eval.test_fixed_tasks_file is None:
+        raise ValueError("--final_test_eval requires eval.test_fixed_tasks_file")
+
+    log_path = Path(run_dir) / "final_test_eval.log"
+    cmd = [
+        sys.executable,
+        "train/eval.py",
+        "--run_dir",
+        str(run_dir),
+        "--model_glob",
+        str(args.final_test_eval_model_glob),
+    ]
+    print(
+        "[FinalTestEval] mode={}, task_file={}, model_glob={}, log={}".format(
+            str(mode),
+            str(merged_cfg.eval.test_fixed_tasks_file),
+            str(args.final_test_eval_model_glob),
+            str(log_path),
+        )
+    )
+    log_f = open(log_path, "a", encoding="utf-8", buffering=1)
+    if mode == "sync":
+        try:
+            ret = subprocess.run(
+                cmd,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        finally:
+            log_f.close()
+        if int(ret.returncode) != 0:
+            raise RuntimeError("Final test eval failed with returncode {}".format(int(ret.returncode)))
+        print("[FinalTestEval] sync finished, log={}".format(str(log_path)))
+        return None
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    log_f.close()
+    print("[FinalTestEval] async started pid={}, log={}".format(int(proc.pid), str(log_path)))
+    return proc
 
 
 def main(args):
@@ -798,6 +877,8 @@ def main(args):
 
         runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
         runner.writter.close()
+
+        _launch_final_test_eval(args=args, merged_cfg=merged_cfg, run_dir=run_dir)
     finally:
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr

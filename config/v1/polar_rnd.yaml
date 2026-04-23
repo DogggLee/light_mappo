@@ -110,8 +110,8 @@ logging:
 eval:
   val_interval: 40
   eval_episode_length: 300
-  fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
-
+  fixed_tasks_file: config/eval_tasks/val_factor_v1_h4_base12.yaml
+  test_fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
 domain_randomization:
   train_split:
     enable: false

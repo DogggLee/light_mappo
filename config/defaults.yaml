@@ -305,6 +305,7 @@ eval:
   eval_episode_length: 600
   fixed_tasks: []
   fixed_tasks_file: null
+  test_fixed_tasks_file: null
 
 # Render settings
 render:

@@ -95,6 +95,8 @@ def main(args):
         
         for model_glob in model_globs:
             main_one_glob(args, model_glob)
+    else:
+        main_one_glob(args, args.model_glob)
 
 def main_one_glob(args, model_glob):
     """
@@ -160,6 +162,13 @@ def main_one_glob(args, model_glob):
     if args.task_file:
         print(f"Override task file from {merged_cfg.eval.fixed_tasks_file} to {args.task_file}")
         merged_cfg.eval.fixed_tasks_file = args.task_file
+    elif merged_cfg.eval.test_fixed_tasks_file is not None:
+        print(
+            "Use eval.test_fixed_tasks_file for offline benchmark: {}".format(
+                merged_cfg.eval.test_fixed_tasks_file
+            )
+        )
+        merged_cfg.eval.fixed_tasks_file = merged_cfg.eval.test_fixed_tasks_file
         
     eval_task_specs, from_external_file = _load_eval_task_specs(merged_cfg)
     if bool(from_external_file) and eval_task_specs is not None:
@@ -220,8 +229,10 @@ def main_one_glob(args, model_glob):
     runner._final_eval_saved_best_models(
         total_num_steps=total_num_steps,
         episode=episode,
-        model_glob=model_glob
+        model_glob=model_glob,
+        record_test_csv=True,
     )
+    print("[EvalOnly] test eval csv written to {}".format(str(run_dir / "test_eval.csv")))
 
     # Step 5: 资源收尾
     envs.close()

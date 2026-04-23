@@ -132,6 +132,7 @@ class RoleBasedRunner(object):
 
         self.log_csv_path = str(self.run_dir / "log.csv")
         self.eval_csv_path = str(self.run_dir / "eval.csv")
+        self.test_eval_csv_path = str(self.run_dir / "test_eval.csv")
         self.init_csv_files = bool(runner_cfg.get("init_csv", True))
         if self.init_csv_files:
             self._init_csv_files()
@@ -3073,6 +3074,79 @@ class RoleBasedRunner(object):
                 ]
             )
 
+    def _init_test_eval_csv(self):
+        """
+        功能:
+            创建完整测试集评估CSV文件并写入表头。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        with open(self.test_eval_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "model_name",
+                    "model_dir",
+                    "episode",
+                    "total_num_steps",
+                    "bucket",
+                    "eval_reward",
+                    "capture_rate",
+                    "capture_steps",
+                    "capture_steps_objective",
+                    "alive_rate",
+                    "max_escape_gap_angle",
+                    "capture_spread_reward",
+                    "captured_episodes",
+                    "total_eval_episodes",
+                ]
+            )
+
+    def _append_test_eval_csv(
+        self,
+        model_name,
+        model_dir,
+        episode,
+        total_num_steps,
+        bucket,
+        eval_metrics,
+    ):
+        """
+        功能:
+            向test_eval.csv追加一行完整测试集评估统计。
+        输入:
+            model_name (str): 模型目录名称。
+            model_dir (str | Path): 模型目录路径。
+            episode (int): 当前训练episode编号。
+            total_num_steps (int): 当前累计环境步数。
+            bucket (str): 评估桶名称。
+            eval_metrics (dict): serial_eval返回的评估指标。
+        输出:
+            无。
+        """
+        with open(self.test_eval_csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    str(model_name),
+                    str(model_dir),
+                    int(episode),
+                    int(total_num_steps),
+                    str(bucket),
+                    float(eval_metrics["eval_reward"]),
+                    float(eval_metrics["capture_rate"]),
+                    float(eval_metrics["capture_steps"]),
+                    float(eval_metrics["capture_steps_objective"]),
+                    float(eval_metrics["alive_rate"]),
+                    float(eval_metrics["max_escape_gap_angle"]),
+                    float(eval_metrics["capture_spread_reward"]),
+                    int(eval_metrics["captured_episodes"]),
+                    int(eval_metrics["total_eval_episodes"]),
+                ]
+            )
+
     def _extract_alive_stats(self, infos):
         """
         功能:
@@ -3970,14 +4044,16 @@ class RoleBasedRunner(object):
     @torch.no_grad()
     def _final_eval_saved_best_models(self, total_num_steps, episode, model_glob=None, 
                                       save_gifs=False,
-                                      save_pngs=False):
+                                      save_pngs=False,
+                                      record_test_csv=False):
         """
         功能:
-            训练完成后重载models下可用模型目录，并对可用评估桶执行最终串行评估与GIF保存。
+            训练完成后重载models下可用模型目录，并对可用评估桶执行最终评估。
         输入:
             total_num_steps (int): 评估记录使用的总步数。
             episode (int): 训练完成时的episode编号。
             model_glob (str | None): 仅评估匹配该glob的模型目录（相对models目录）。
+            record_test_csv (bool): 是否写入run_dir/test_eval.csv。
         输出:
             无。
         """
@@ -4008,82 +4084,98 @@ class RoleBasedRunner(object):
             return
 
         print("[FinalEval] start evaluating {} model directories".format(len(model_dirs)))
+        if bool(record_test_csv):
+            self._init_test_eval_csv()
+        use_serial_eval = bool(save_gifs) or bool(save_pngs)
+        eval_method_name = "serial_eval" if bool(use_serial_eval) else "eval"
+        print("[FinalEval] eval_method={} (save_gifs={}, save_pngs={})".format(
+            str(eval_method_name),
+            bool(save_gifs),
+            bool(save_pngs),
+        ))
 
-        # Step 2: 逐目录加载模型并对可用评估桶执行最终串行评估，默认保存PNG到目录/res。
+        def _run_final_eval_bucket(eval_envs, bucket, output_dir):
+            """
+            功能:
+                按最终评估可视化开关选择串行或并行评估方法。
+            输入:
+                eval_envs (VecEnv): 评估环境。
+                bucket (str): 评估桶名称。
+                output_dir (Path | None): 可视化输出目录。
+            输出:
+                dict: evaluation指标字典。
+            """
+            eval_fn = self.serial_eval if bool(use_serial_eval) else self.eval
+            return eval_fn(
+                total_num_steps=total_num_steps,
+                episode=episode,
+                eval_envs=eval_envs,
+                bucket=bucket,
+                save_gifs=save_gifs,
+                save_pngs=save_pngs,
+                record_logs=False,
+                gif_output_dir=output_dir,
+            )
+
+        # Step 2: 逐目录加载模型并对可用评估桶执行最终评估。
         for model_dir in model_dirs:
             self._load_models_from_dir(model_dir)
+            model_name = "." if Path(model_dir) == root_model_dir else Path(model_dir).name
             res_dir = Path(model_dir) / "res"
             res_dir.mkdir(parents=True, exist_ok=True)
-            for old_gif in res_dir.glob("e-*-env-*.gif"):
-                old_gif.unlink(missing_ok=True)
-            for old_png in res_dir.glob("e-*-env-*.png"):
-                old_png.unlink(missing_ok=True)
+            if bool(use_serial_eval):
+                for old_gif in res_dir.glob("e-*-env-*.gif"):
+                    old_gif.unlink(missing_ok=True)
+                for old_png in res_dir.glob("e-*-env-*.png"):
+                    old_png.unlink(missing_ok=True)
 
             if self.use_dual_zone_eval:
-                self.serial_eval(
-                    total_num_steps=total_num_steps,
-                    episode=episode,
+                metrics = _run_final_eval_bucket(
                     eval_envs=self.eval_envs_zone_false,
                     bucket="fixed_zone_false",
-                    save_gifs=save_gifs,
-                    save_pngs=save_pngs,
-                    record_logs=False,
-                    gif_output_dir=res_dir,
+                    output_dir=res_dir,
                 )
-                self.serial_eval(
-                    total_num_steps=total_num_steps,
-                    episode=episode,
+                if bool(record_test_csv):
+                    self._append_test_eval_csv(model_name, model_dir, episode, total_num_steps, "fixed_zone_false", metrics)
+                metrics = _run_final_eval_bucket(
                     eval_envs=self.eval_envs_zone_true,
                     bucket="fixed_zone_true",
-                    save_gifs=save_gifs,
-                    save_pngs=save_pngs,
-                    record_logs=False,
-                    gif_output_dir=res_dir,
+                    output_dir=res_dir,
                 )
+                if bool(record_test_csv):
+                    self._append_test_eval_csv(model_name, model_dir, episode, total_num_steps, "fixed_zone_true", metrics)
                 if (
                     self.eval_envs_target_learn_zone_false is not None
                     and self.eval_envs_target_learn_zone_true is not None
                 ):
-                    self.serial_eval(
-                        total_num_steps=total_num_steps,
-                        episode=episode,
+                    metrics = _run_final_eval_bucket(
                         eval_envs=self.eval_envs_target_learn_zone_false,
                         bucket="target_learn_zone_false",
-                        save_gifs=save_gifs,
-                        save_pngs=save_pngs,
-                        record_logs=False,
-                        gif_output_dir=res_dir,
+                        output_dir=res_dir,
                     )
-                    self.serial_eval(
-                        total_num_steps=total_num_steps,
-                        episode=episode,
+                    if bool(record_test_csv):
+                        self._append_test_eval_csv(model_name, model_dir, episode, total_num_steps, "target_learn_zone_false", metrics)
+                    metrics = _run_final_eval_bucket(
                         eval_envs=self.eval_envs_target_learn_zone_true,
                         bucket="target_learn_zone_true",
-                        save_gifs=save_gifs,
-                        save_pngs=save_pngs,
-                        record_logs=False,
-                        gif_output_dir=res_dir,
+                        output_dir=res_dir,
                     )
+                    if bool(record_test_csv):
+                        self._append_test_eval_csv(model_name, model_dir, episode, total_num_steps, "target_learn_zone_true", metrics)
             else:
-                self.serial_eval(
-                    total_num_steps=total_num_steps,
-                    episode=episode,
+                metrics = _run_final_eval_bucket(
                     eval_envs=self.eval_envs,
                     bucket="fixed",
-                    save_gifs=save_gifs,
-                    save_pngs=save_pngs,
-                    record_logs=False,
-                    gif_output_dir=res_dir,
+                    output_dir=res_dir,
                 )
+                if bool(record_test_csv):
+                    self._append_test_eval_csv(model_name, model_dir, episode, total_num_steps, "fixed", metrics)
                 if self.eval_envs_target_learn is not None:
-                    self.serial_eval(
-                        total_num_steps=total_num_steps,
-                        episode=episode,
+                    metrics = _run_final_eval_bucket(
                         eval_envs=self.eval_envs_target_learn,
                         bucket="target_learn",
-                        save_gifs=save_gifs,
-                        save_pngs=save_pngs,
-                        record_logs=False,
-                        gif_output_dir=res_dir,
+                        output_dir=res_dir,
                     )
-            print("[FinalEval] finished {} -> {}".format(str(model_dir), str(res_dir)))
+                    if bool(record_test_csv):
+                        self._append_test_eval_csv(model_name, model_dir, episode, total_num_steps, "target_learn", metrics)
+            print("[FinalEval] finished {} -> {}".format(str(model_dir), str(res_dir or self.run_dir)))
