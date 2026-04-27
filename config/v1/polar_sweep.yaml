@@ -4,7 +4,7 @@ max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: Curriculum_delBase_spreadCap_sweep
+env_name: Dead_collided_Curriculum_sweep
 progress_interval_sec: 300
 progress_topk: 3
 
@@ -12,28 +12,31 @@ parameters:
   env.action_frame:
     values: [local]
   env.hunter_collision_state_mode:
-    values: [collided]
+    values: [dead, collided]
   reward.base_reward_mode:
-    values: [delta_window]
+    values: [legacy, delta_window]
+  
+  reward.capture_reward_allocation:
+    values: [alone, spread]
   
   reward.mi_diversity_enable:
     values: [false]
   reward.mi_diversity_coef: 
-    values: [0.1, 1.0]
+    values: [1.0]
 
   reward.spread_reward_enable:
-    values: [true]
+    values: [false, true]
   reward.spread_reward_coef:
-    values: [0.5, 2.0, 4.0]
+    values: [4.0]
   
   optim.lr:
-    values: [0.0002, 0.0005, 0.001]
+    values: [0.0002]
   schedule.use_linear_lr_decay:
     values: [true]
   domain_randomization.train_split.enable:
     values: [false]
   curriculum.enable: 
-    values: [true]
+    values: [false, true]
 
 conditional_ignore:
   - when:
