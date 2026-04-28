@@ -17,6 +17,7 @@ env:
   max_hunters_num: 3
   hunters_in_zone: true
   obs_mode: rel_polar  # Choices: ["legacy", "rel_polar"]
+  own_obs_items: ["global_pos", "global_vel"]
   action_frame: local
   hunter_collision_state_mode: collided  # Choices: ["dead", "collided"]
 
@@ -110,9 +111,10 @@ logging:
 eval:
   val_interval: 40
   eval_episode_length: 300
-  fixed_tasks_file: config/eval_tasks/val_factor_v1_h4_base12.yaml
-  test_fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
+  # fixed_tasks_file: config/eval_tasks/val_factor_v1_h4_base12.yaml
   # test_fixed_tasks_file: config/eval_tasks/test_factor_v1_h5_full720.yaml
+  fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
+  test_fixed_tasks_file: config/eval_tasks/patrol_tasks_h10_p3_base50.yaml
 
 domain_randomization:
   train_split:

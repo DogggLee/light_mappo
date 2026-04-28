@@ -1389,6 +1389,15 @@ class UAVPursuitEnv(object):
         self.coord_topk_hunters = int(max(1, int(env_cfg.coord_topk_hunters)))
         self.neighbor_feat_dim = 6  # [dx,dy,dvx,dvy,d,valid]
         self.target_feat_dim = 6    # [dx,dy,dvx,dvy,d,visible]
+        self.rel_polar_own_obs_items = [str(x) for x in list(env_cfg.own_obs_items)]
+        self.rel_polar_own_obs_item_dims = {
+            "global_pos": 2,
+            "global_vel": 2,
+            "local_vel": 2,
+            "speed_norm": 1,
+            "boundary_dist_norm": 1,
+        }
+        self._validate_rel_polar_own_obs_items()
         if self.obs_mode == "legacy":
             self.coord_summary_feat_dim = 2 if bool(self.coord_summary_obs_enable) else 0
             self.obs_dim = (
@@ -1399,9 +1408,12 @@ class UAVPursuitEnv(object):
                 + self.coord_summary_feat_dim
             )
         else:
-            # rel_polar: own(4) + target_polar(2) + topK_hunter_polar(K*3=[d,dir,valid]).
+            # rel_polar: own(variable) + target_polar(2) + topK_hunter_polar(K*3=[d,dir,valid]).
             self.coord_summary_feat_dim = 0
-            self.obs_dim = 4 + 2 + self.neighbor_N * 3
+            own_dim = int(
+                sum(self.rel_polar_own_obs_item_dims[item] for item in self.rel_polar_own_obs_items)
+            )
+            self.obs_dim = own_dim + 2 + self.neighbor_N * 3
         self.action_dim = 2
 
         self.capture_dis = float(env_cfg.capture_dis)
@@ -4130,6 +4142,74 @@ class UAVPursuitEnv(object):
             obs.append(np.concatenate(parts, axis=0).astype(np.float32))
         return obs
 
+    def _validate_rel_polar_own_obs_items(self):
+        """
+        功能:
+            校验rel_polar模式下own观测组成字段是否合法。
+        输入:
+            无。
+        输出:
+            无。
+        """
+        if self.obs_mode != "rel_polar":
+            return
+        if len(self.rel_polar_own_obs_items) == 0:
+            raise ValueError("env.own_obs_items must not be empty when env.obs_mode=rel_polar")
+        for item in self.rel_polar_own_obs_items:
+            if item not in self.rel_polar_own_obs_item_dims:
+                raise ValueError(
+                    "Unsupported env.own_obs_items entry: {} (choices: {})".format(
+                        str(item),
+                        sorted(self.rel_polar_own_obs_item_dims.keys()),
+                    )
+                )
+
+    def _build_rel_polar_own_obs(
+        self,
+        agent_idx: int,
+        positions: np.ndarray,
+        velocities: np.ndarray,
+        headings: np.ndarray,
+        inv_scale: float,
+    ) -> np.ndarray:
+        """
+        功能:
+            按env.own_obs_items配置构造rel_polar模式下的自身观测字段。
+        输入:
+            agent_idx (int): 当前智能体索引。
+            positions (np.ndarray): shape=(agent_num,2) 全局位置缓存。
+            velocities (np.ndarray): shape=(agent_num,2) 全局速度缓存。
+            headings (np.ndarray): shape=(agent_num,2) 全局单位朝向缓存。
+            inv_scale (float): 位置/速度归一化尺度倒数。
+        输出:
+            np.ndarray: shape=(own_dim,) 自身观测向量。
+        """
+        ai_pos = positions[int(agent_idx)]
+        ai_vel = velocities[int(agent_idx)]
+        ai_heading = headings[int(agent_idx)]
+        own_parts = []
+        for item in self.rel_polar_own_obs_items:
+            if item == "global_pos":
+                own_parts.append((ai_pos * inv_scale).astype(np.float32))
+                continue
+            if item == "global_vel":
+                own_parts.append((ai_vel * inv_scale).astype(np.float32))
+                continue
+            if item == "local_vel":
+                vel_local = self._global_action_to_local(ai_vel, ai_heading) * np.float32(inv_scale)
+                own_parts.append(np.asarray(vel_local, dtype=np.float32).reshape(2))
+                continue
+            if item == "speed_norm":
+                speed_norm = float(np.linalg.norm(ai_vel) * inv_scale)
+                own_parts.append(np.array([speed_norm], dtype=np.float32))
+                continue
+            if item == "boundary_dist_norm":
+                boundary_dist_norm = float(self._distance_to_nearest_boundary(ai_pos) * inv_scale)
+                own_parts.append(np.array([boundary_dist_norm], dtype=np.float32))
+                continue
+            raise ValueError("Unsupported rel_polar own obs item: {}".format(str(item)))
+        return np.concatenate(own_parts, axis=0).astype(np.float32)
+
     def _relative_polar_feature(self, observer: BaseAgent, target_pos: np.ndarray, scale: float):
         """
         功能:
@@ -4156,7 +4236,7 @@ class UAVPursuitEnv(object):
     def _build_obs_rel_polar(self):
         """
         功能:
-            按rel_polar模式组装观测：own(4)+target极坐标(2)+topK hunter极坐标槽(K*3)。
+            按rel_polar模式组装观测：own(variable)+target极坐标(2)+topK hunter极坐标槽(K*3)。
         输入:
             无。
         输出:
@@ -4179,10 +4259,14 @@ class UAVPursuitEnv(object):
                 obs.append(np.zeros(self.obs_dim, dtype=np.float32))
                 continue
 
-            ai_pos = positions[i]
-            ai_vel = velocities[i]
             ai_heading = headings[i]
-            own = np.concatenate([ai_pos * inv_scale, ai_vel * inv_scale]).astype(np.float32)
+            own = self._build_rel_polar_own_obs(
+                agent_idx=int(i),
+                positions=positions,
+                velocities=velocities,
+                headings=headings,
+                inv_scale=float(inv_scale),
+            )
 
             # target总是可观测：在当前agent局部坐标系下的相对距离与方向
             target_rel = pair_rel[i, self.target_index]

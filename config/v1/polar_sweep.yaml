@@ -4,20 +4,24 @@ max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: Dead_collided_Curriculum_sweep
+env_name: rel_polar_own_obs_sweep
 progress_interval_sec: 300
 progress_topk: 3
 
 parameters:
   env.action_frame:
     values: [local]
+  env.obs_mode:
+    values: [rel_polar]
+  env.own_obs_items:
+    values: [[global_pos, global_vel], [speed_norm], [speed_norm, boundary_dist_norm]]
   env.hunter_collision_state_mode:
-    values: [dead, collided]
+    values: [collided]
   reward.base_reward_mode:
-    values: [legacy, delta_window]
+    values: [delta_window]
   
   reward.capture_reward_allocation:
-    values: [alone, spread]
+    values: [spread]
   
   reward.mi_diversity_enable:
     values: [false]
@@ -25,7 +29,7 @@ parameters:
     values: [1.0]
 
   reward.spread_reward_enable:
-    values: [false, true]
+    values: [true]
   reward.spread_reward_coef:
     values: [4.0]
   

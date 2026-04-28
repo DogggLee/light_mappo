@@ -111,6 +111,7 @@ env:
   num_explorers: 0
   obs_mode: legacy  # Choices: ["legacy", "rel_polar"]
   action_frame: global  # Choices: ["global", "local"]
+  own_obs_items: ["global_pos", "global_vel"]  # For rel_polar. Choices: ["global_pos", "global_vel", "local_vel", "speed_norm", "boundary_dist_norm"]
   neighbor_N: 2
   hunters_in_zone: true
   target_avoid_hunter_zone: true

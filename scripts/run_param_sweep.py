@@ -73,9 +73,12 @@ ALIASES = {
 
 NAME_ALIASES = {
     "env.action_frame": "acF",
+    "env.obs_mode": "obs",
+    "env.own_obs_items": "own_obs",
     "env.hunter_collision_state_mode": "colli",
     
     "reward.base_reward_mode": "base",
+    "reward.capture_reward_allocation": "capAlloc",
 
     "reward.mi_diversity_enable": "mi",
     "reward.mi_diversity_coef": "miC",
