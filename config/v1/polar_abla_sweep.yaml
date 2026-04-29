@@ -1,10 +1,10 @@
 base_config: config/v1/polar.yaml
-output_dir: results/sweeps/polar_own_obs
+output_dir: results/sweeps/polar_abla
 max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: rel_polar_own_obs_sweep
+env_name: colli_state_base_capAllo_sweep
 progress_interval_sec: 300
 progress_topk: 3
 
@@ -14,14 +14,14 @@ parameters:
   env.obs_mode:
     values: [rel_polar]
   env.own_obs_items:
-    values: [[global_pos, global_vel], [speed_norm], [speed_norm, boundary_dist_norm]]
+    values: [[global_pos, global_vel]]
   env.hunter_collision_state_mode:
-    values: [collided]
+    values: [dead, collided]
   reward.base_reward_mode:
-    values: [delta_window]
+    values: [legacy, delta_window]
   
   reward.capture_reward_allocation:
-    values: [spread]
+    values: [alone, spread]
   
   reward.mi_diversity_enable:
     values: [false]
@@ -43,6 +43,10 @@ parameters:
     values: [false, true]
 
 conditional_ignore:
+  - when:
+      env.obs_mode: legacy
+    ignore:
+      - env.own_obs_items
   - when:
       reward.base_reward_mode: legacy
     ignore:

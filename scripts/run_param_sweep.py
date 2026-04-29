@@ -5,7 +5,6 @@ Example sweep YAML:
 
 base_config: config/v1/base.yaml
 exp_name: base_ablation
-output_dir: results/sweeps/base_ablation
 max_parallel: 2
 python: python
 train_script: train/train.py
@@ -48,7 +47,6 @@ plot:
 
 import argparse
 import csv
-import hashlib
 import itertools
 import json
 import os
@@ -264,6 +262,60 @@ def _value_to_name(value):
     return text
 
 
+def _sanitize_name_token(text):
+    """
+    功能:
+        将实验名片段清洗为文件名安全字符串。
+    输入:
+        text (str): 原始文本。
+    输出:
+        str: 清洗后的字符串。
+    """
+    return re.sub(r"[^0-9A-Za-z_.+=,-]+", "_", str(text))
+
+
+def _own_obs_items_alias(value):
+    """
+    功能:
+        为env.own_obs_items提供更紧凑的实验名别名。
+    输入:
+        value (object): own_obs_items参数值。
+    输出:
+        str | None: 若命中特定组合则返回别名，否则返回None。
+    """
+    if not isinstance(value, list):
+        return None
+    if value == ["global_pos", "global_vel"]:
+        return "g_pv"
+    if value == ["speed_norm"]:
+        return "spdN"
+    if value == ["speed_norm", "boundary_dist_norm"]:
+        return "spdN_bd"
+    return None
+
+
+def _format_param_name_fragment(path, value):
+    """
+    功能:
+        将单个参数格式化为实验名片段；必要时返回None表示忽略。
+    输入:
+        path (str): 参数路径。
+        value (object): 参数值。
+    输出:
+        str | None: 格式化后的片段。
+    """
+    if str(path) == "env.own_obs_items":
+        own_alias = _own_obs_items_alias(value)
+        if own_alias is not None:
+            return own_alias
+
+    safe_path = NAME_ALIASES.get(str(path), str(path).split(".")[-1])
+    safe_path = _sanitize_name_token(str(safe_path).replace("/", "_").replace("\\", "_"))
+    if isinstance(value, bool):
+        return safe_path if bool(value) else None
+    return "{}-{}".format(str(safe_path), _sanitize_name_token(_value_to_name(value)))
+
+
 def _build_experiment_name(combo):
     """
     功能:
@@ -273,18 +325,36 @@ def _build_experiment_name(combo):
     输出:
         str: 形如param-value + param-value的实验名。
     """
+    combo_map = {str(path): value for path, value in combo}
+    skip_keys = set()
     parts = []
-    # breakpoint()
+
+    if (
+        bool(combo_map.get("reward.mi_diversity_enable", False))
+        and "reward.mi_diversity_coef" in combo_map
+    ):
+        parts.append("mi-{}".format(_sanitize_name_token(_value_to_name(combo_map["reward.mi_diversity_coef"]))))
+        skip_keys.add("reward.mi_diversity_enable")
+        skip_keys.add("reward.mi_diversity_coef")
+    if (
+        bool(combo_map.get("reward.spread_reward_enable", False))
+        and "reward.spread_reward_coef" in combo_map
+    ):
+        parts.append("spd-{}".format(_sanitize_name_token(_value_to_name(combo_map["reward.spread_reward_coef"]))))
+        skip_keys.add("reward.spread_reward_enable")
+        skip_keys.add("reward.spread_reward_coef")
+
     for path, value in combo:
-        safe_path = NAME_ALIASES.get(str(path), str(path).split(".")[-1])
-        safe_path = str(safe_path).replace("/", "_").replace("\\", "_")
-        parts.append("{}-{}".format(safe_path, _value_to_name(value)))
-    name = " + ".join(parts)
-    name = re.sub(r"[^0-9A-Za-z_.+= -]+", "_", name)
-    if len(name) <= 180:
-        return name
-    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
-    return "{} + h-{}".format(name[:165].rstrip(" +"), digest)
+        if str(path) in skip_keys:
+            continue
+        fragment = _format_param_name_fragment(path, value)
+        if fragment is None or str(fragment) == "":
+            continue
+        parts.append(str(fragment))
+
+    if len(parts) == 0:
+        return "base"
+    return " + ".join(parts)
 
 
 def _build_combinations(parameters):
@@ -414,9 +484,13 @@ def _prepare_experiments(sweep_cfg, sweep_path):
         base_config_path = root / base_config_path
     base_cfg = _load_yaml(base_config_path)
 
-    output_dir = Path(str(sweep_cfg.get("output_dir", "results/sweeps/default")))
-    if not output_dir.is_absolute():
-        output_dir = root / output_dir
+    output_dir = _resolve_output_dir(sweep_cfg)
+    if output_dir.exists():
+        raise FileExistsError(
+            "Sweep output_dir already exists: {}. Please remove/rename it before running.".format(
+                str(output_dir)
+            )
+        )
     configs_dir = output_dir / "configs"
     output_dir.mkdir(parents=True, exist_ok=True)
     configs_dir.mkdir(parents=True, exist_ok=True)
@@ -478,10 +552,12 @@ def _resolve_output_dir(sweep_cfg):
         Path: 绝对输出目录。
     """
     root = PROJECT_ROOT
-    output_dir = Path(str(sweep_cfg.get("output_dir", "results/sweeps/default")))
-    if not output_dir.is_absolute():
-        output_dir = root / output_dir
-    return output_dir
+    base_config_path = Path(str(sweep_cfg["base_config"]))
+    if not base_config_path.is_absolute():
+        base_config_path = root / base_config_path
+    base_cfg = _load_yaml(base_config_path)
+    env_name = str(sweep_cfg.get("env_name", base_cfg["env"]["env_name"]))
+    return root / "results" / str(env_name) / "sweeps"
 
 
 def _expected_run_root(config_path):
@@ -524,6 +600,21 @@ def _latest_run_dir(config_path):
     if len(candidates) == 0:
         return ""
     return str(sorted(candidates, key=lambda x: x[0])[-1][1])
+
+
+def _write_leaderboard_file(output_dir, payload):
+    """
+    功能:
+        将当前global best与topK结果写入输出目录。
+    输入:
+        output_dir (Path): sweep输出目录。
+        payload (dict): 需写入的排行榜信息。
+    输出:
+        无。
+    """
+    out_path = Path(output_dir) / "leaderboard.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def _run_experiments(sweep_cfg, output_dir, manifest):
@@ -855,10 +946,29 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
             )
 
         scored_items = sorted(scored_items, key=lambda x: x["sort_key"])
+        leaderboard_payload = {
+            "progress": {
+                "total": int(total),
+                "done": int(done),
+                "failed": int(failed),
+                "running": int(running_cnt),
+                "pending": int(pending_cnt),
+                "eta": str(eta_text),
+            },
+            "global_best": None,
+            "topk_best": [],
+        }
         if len(scored_items) > 0:
             best = scored_items[0]
             best_steps_text = "NA" if best["capture_steps"] is None else "{:.2f}".format(float(best["capture_steps"]))
             best_alive_text = "NA" if best["alive_rate"] is None else "{:.4f}".format(float(best["alive_rate"]))
+            leaderboard_payload["global_best"] = {
+                "id": int(best["id"]),
+                "experiment_name": str(best["experiment_name"]),
+                "capture_rate": float(best["capture_rate"]),
+                "capture_steps": None if best["capture_steps"] is None else float(best["capture_steps"]),
+                "alive_rate": None if best["alive_rate"] is None else float(best["alive_rate"]),
+            }
             print(
                 "[Sweep][GlobalBest] exp_{:04d} name={} best_capture_rate={:.4f} best_capture_steps={} best_alive_rate={}".format(
                     int(best["id"]),
@@ -872,6 +982,16 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
             for rank, cand in enumerate(scored_items[:topn], start=1):
                 cand_steps_text = "NA" if cand["capture_steps"] is None else "{:.2f}".format(float(cand["capture_steps"]))
                 cand_alive_text = "NA" if cand["alive_rate"] is None else "{:.4f}".format(float(cand["alive_rate"]))
+                leaderboard_payload["topk_best"].append(
+                    {
+                        "rank": int(rank),
+                        "id": int(cand["id"]),
+                        "experiment_name": str(cand["experiment_name"]),
+                        "capture_rate": float(cand["capture_rate"]),
+                        "capture_steps": None if cand["capture_steps"] is None else float(cand["capture_steps"]),
+                        "alive_rate": None if cand["alive_rate"] is None else float(cand["alive_rate"]),
+                    }
+                )
                 print(
                     "[Sweep][TopK] rank={} exp_{:04d} capture_rate={:.4f} capture_steps={} alive_rate={} name={}".format(
                         int(rank),
@@ -884,6 +1004,7 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
                 )
         else:
             print("[Sweep][GlobalBest] exp_NA name=NA best_capture_rate=NA best_capture_steps=NA best_alive_rate=NA")
+        _write_leaderboard_file(output_dir, leaderboard_payload)
         if failed > 0:
             failed_items = [x for x in manifest if str(x.get("status", "")) == "failed"]
             for exp_item in failed_items[:10]:
@@ -1016,8 +1137,7 @@ def _run_experiments(sweep_cfg, output_dir, manifest):
                 _print_progress()
         if len(pending) > 0 or len(running) > 0:
             time.sleep(5.0)
-    if _has_new_strict_progress():
-        _print_progress()
+    _print_progress()
     _write_manifest(output_dir, manifest)
     return manifest
 
@@ -1036,22 +1156,23 @@ def _write_manifest(output_dir, manifest):
         json.dump({"experiments": manifest}, f, ensure_ascii=False, indent=2)
 
 
-def _read_eval_rows(run_dir, buckets):
+def _read_result_rows(run_dir, buckets, result_file):
     """
     功能:
-        从run目录读取eval.csv指定bucket的曲线数据。
+        从run目录读取指定结果CSV中的bucket数据。
     输入:
         run_dir (str | Path): 训练run目录。
         buckets (list[str]): 需要读取的评估bucket。
+        result_file (str): 结果CSV文件名。
     输出:
-        list[dict]: eval.csv行数据。
+        list[dict]: 结果CSV行数据。
     """
-    eval_path = Path(run_dir) / "eval.csv"
-    if not eval_path.exists():
+    result_path = Path(run_dir) / str(result_file)
+    if not result_path.exists():
         return []
     rows = []
     bucket_set = set(str(x) for x in buckets)
-    with open(eval_path, "r", newline="", encoding="utf-8") as f:
+    with open(result_path, "r", newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             if str(row.get("bucket", "")) not in bucket_set:
@@ -1060,32 +1181,50 @@ def _read_eval_rows(run_dir, buckets):
     return rows
 
 
-def _write_summary_csv(output_dir, manifest, buckets, metrics):
+def _write_summary_csv(output_dir, manifest, buckets, metrics, result_file, output_name):
     """
     功能:
-        汇总所有实验eval结果到一个CSV。
+        汇总所有实验结果到一个CSV。
     输入:
         output_dir (Path): sweep输出目录。
         manifest (list[dict]): 实验manifest。
         buckets (list[str]): 评估bucket列表。
         metrics (list[str]): 指标列表。
+        result_file (str): 结果CSV文件名。
+        output_name (str): 汇总CSV输出文件名。
     输出:
         Path: 汇总CSV路径。
     """
-    out_path = Path(output_dir) / "summary.csv"
+    out_path = Path(output_dir) / str(output_name)
     param_keys = sorted({k for item in manifest for k in item.get("params", {}).keys()})
-    fieldnames = ["id", "experiment_name", "status", "run_dir", "bucket", "episode", "total_num_steps"] + param_keys + list(metrics)
+    fieldnames = [
+        "id",
+        "experiment_name",
+        "status",
+        "run_dir",
+        "model_name",
+        "model_dir",
+        "bucket",
+        "episode",
+        "total_num_steps",
+    ] + param_keys + list(metrics)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for item in manifest:
-            rows = _read_eval_rows(item.get("run_dir", ""), buckets)
+            rows = _read_result_rows(
+                item.get("run_dir", ""),
+                buckets,
+                result_file=result_file,
+            )
             for row in rows:
                 out = {
                     "id": item["id"],
                     "experiment_name": item["experiment_name"],
                     "status": item["status"],
                     "run_dir": item.get("run_dir", ""),
+                    "model_name": row.get("model_name", ""),
+                    "model_dir": row.get("model_dir", ""),
                     "bucket": row.get("bucket", ""),
                     "episode": row.get("episode", ""),
                     "total_num_steps": row.get("total_num_steps", ""),
@@ -1121,6 +1260,7 @@ def _plot_results(output_dir, manifest, plot_cfg):
     plots_dir = Path(output_dir) / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     param_keys = sorted({k for item in manifest for k in item.get("params", {}).keys()})
+    result_file = str(plot_cfg.get("result_file", "eval.csv"))
 
     for bucket in buckets:
         for metric in metrics:
@@ -1139,7 +1279,11 @@ def _plot_results(output_dir, manifest, plot_cfg):
                     plt.figure(figsize=(8.0, 4.8), dpi=130)
                     plotted = False
                     for item in sorted(items, key=lambda it: _value_to_name(it["params"][varied_param])):
-                        rows = _read_eval_rows(item.get("run_dir", ""), [bucket])
+                        rows = _read_result_rows(
+                            item.get("run_dir", ""),
+                            [bucket],
+                            result_file=result_file,
+                        )
                         xs = []
                         ys = []
                         for row in rows:
@@ -1213,7 +1357,22 @@ def main():
         with open(manifest_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         manifest = list(data.get("experiments", []))
-        _write_summary_csv(output_dir, manifest, buckets, metrics)
+        _write_summary_csv(
+            output_dir,
+            manifest,
+            buckets,
+            metrics,
+            result_file="eval.csv",
+            output_name="summary.csv",
+        )
+        _write_summary_csv(
+            output_dir,
+            manifest,
+            buckets,
+            metrics,
+            result_file="test_eval.csv",
+            output_name="test_summary.csv",
+        )
         _plot_results(output_dir, manifest, plot_cfg)
         print("[Sweep] plots written to {}".format(str(output_dir / "plots")))
         return
@@ -1225,9 +1384,25 @@ def main():
         return
 
     manifest = _run_experiments(sweep_cfg, output_dir, manifest)
-    summary_path = _write_summary_csv(output_dir, manifest, buckets, metrics)
+    summary_path = _write_summary_csv(
+        output_dir,
+        manifest,
+        buckets,
+        metrics,
+        result_file="eval.csv",
+        output_name="summary.csv",
+    )
+    test_summary_path = _write_summary_csv(
+        output_dir,
+        manifest,
+        buckets,
+        metrics,
+        result_file="test_eval.csv",
+        output_name="test_summary.csv",
+    )
     _plot_results(output_dir, manifest, plot_cfg)
     print("[Sweep] summary written to {}".format(str(summary_path)))
+    print("[Sweep] test summary written to {}".format(str(test_summary_path)))
     print("[Sweep] plots written to {}".format(str(output_dir / "plots")))
 
 
