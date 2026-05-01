@@ -1,35 +1,35 @@
 base_config: config/v1/polar.yaml
-output_dir: results/sweeps/polar_own_obs
+output_dir: results/sweeps/polar_ablation
 max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: rel_polar_own_obs_sweep_dead+legacyBase
+env_name: Curriculum_Ablation_sweep
 progress_interval_sec: 300
 progress_topk: 3
 
 parameters:
   env.action_frame:
     values: [local]
-  env.obs_mode:
-    values: [rel_polar]
-  env.own_obs_items:
-    values: [[global_pos, global_vel], [speed_norm], [speed_norm, boundary_dist_norm]]
   env.hunter_collision_state_mode:
-    values: [dead]
+    values: [collided]
   reward.base_reward_mode:
-    values: [legacy]
+    values: [legacy, delta_window]
   
   reward.capture_reward_allocation:
-    values: [spread]
-  
+    values: [alone, spread]
+  reward.hunter_capture_reward:
+    values: [150.0]
+  reward.hunter_capture_help_reward:
+    values: [30.0]
+
   reward.mi_diversity_enable:
     values: [false]
   reward.mi_diversity_coef: 
-    values: [1.0]
+    values: [0.1, 1.0, 2.0, 4.0]
 
   reward.spread_reward_enable:
-    values: [true]
+    values: [false, true]
   reward.spread_reward_coef:
     values: [4.0]
   
