@@ -3351,12 +3351,16 @@ class UAVPursuitEnv(object):
             hunter_valid_mask = step_cache["hunter_valid_mask"]
             hunter_to_target_dist = step_cache["hunter_to_target_dist"]
             hunter_to_target_unit = step_cache["hunter_to_target_unit"]
+            
+            # 捕捉到目标的无人机，得到完整的capture奖励
             captor_set = set(int(hid) for hid in captor_ids)
             for hid in captor_ids:
                 hid_i = int(hid)
                 if hid_i < 0 or hid_i >= self.num_hunters:
                     continue
                 capture_reward[hid_i] = float(self.hunter_capture_reward)
+            
+            # 其余有效辅助无人机
             eligible_ids = []
             for hid in range(self.num_hunters):
                 if not bool(hunter_valid_mask[hid]):
@@ -3364,6 +3368,7 @@ class UAVPursuitEnv(object):
                 if int(hid) in captor_set:
                     continue
                 eligible_ids.append(int(hid))
+                
             if len(eligible_ids) > 0:
                 ref_vec = np.zeros(2, dtype=np.float32)
                 for hid in captor_ids:

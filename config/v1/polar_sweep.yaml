@@ -4,11 +4,13 @@ max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: rel_spdN_Ablation
+env_name: rel_spdN_Ablation_colli_alloc
 progress_interval_sec: 300
 progress_topk: 3
 
 parameters:
+  exp.num_env_steps:
+    values: [2000000]
   env.action_frame:
     values: [local]
   env.obs_mode:
@@ -16,12 +18,12 @@ parameters:
   env.own_obs_items:
     values: [[speed_norm]]
   env.hunter_collision_state_mode:
-    values: [collided]
+    values: [dead, collided]
   reward.base_reward_mode:
     values: [delta_window]
   
   reward.capture_reward_allocation:
-    values: [spread]
+    values: [alone, spread]
   
   reward.mi_diversity_enable:
     values: [false]
@@ -29,9 +31,9 @@ parameters:
     values: [1.0]
 
   reward.spread_reward_enable:
-    values: [false, true]
+    values: [true]
   reward.spread_reward_coef:
-    values: [4.0]
+    values: [0.5, 4.0]
   
   optim.lr:
     values: [0.0002]
@@ -40,7 +42,7 @@ parameters:
   domain_randomization.train_split.enable:
     values: [false]
   curriculum.enable: 
-    values: [false, true]
+    values: [true]
 
 conditional_ignore:
   - when:
