@@ -174,8 +174,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target_avoid_hunter_zone",
         type=str,
-        required=True,
-        help="写入每个任务的target_avoid_hunter_zone，取true/false。",
+        default=None,
+        help="可选：写入每个任务的target_avoid_hunter_zone，取true/false；未提供则不写入该字段。",
     )
     parser.add_argument(
         "--target_hunter_zone_min_dis",
@@ -546,10 +546,12 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
     if "patrol" in policy_choices and len(patrol_route_pool) == 0:
         raise ValueError("Patrol policy requested but no valid patrol route names found")
     hunters_in_zone_choices = _parse_bool_choices(str(args.hunters_in_zone_choices), "--hunters_in_zone_choices")
-    target_avoid_hunter_zone = _parse_bool_value(
-        str(args.target_avoid_hunter_zone),
-        "--target_avoid_hunter_zone",
-    )
+    target_avoid_hunter_zone = None
+    if args.target_avoid_hunter_zone is not None:
+        target_avoid_hunter_zone = _parse_bool_value(
+            str(args.target_avoid_hunter_zone),
+            "--target_avoid_hunter_zone",
+        )
 
     # Step 3: 先采样基础环境，再与hunter数量集合做笛卡尔组合
     rng = random.Random(int(args.rand_seed))
@@ -628,9 +630,10 @@ def build_tasks(args: argparse.Namespace) -> list[dict]:
             "target_route_id": int(args.target_route_id),
             "target_patrol_names": [str(route_name)],
             "hunters_in_zone": bool(hunters_in_zone),
-            "target_avoid_hunter_zone": bool(target_avoid_hunter_zone),
             "target_hunter_zone_min_dis": float(args.target_hunter_zone_min_dis),
         }
+        if target_avoid_hunter_zone is not None:
+            base_spec["target_avoid_hunter_zone"] = bool(target_avoid_hunter_zone)
         if capture_dis_ratio is not None:
             base_spec["capture_dis_ratio"] = float(capture_dis_ratio)
         if capture_step is not None:

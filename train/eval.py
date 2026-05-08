@@ -27,6 +27,7 @@ from utils.util import load_config
 from train.train import (
     _build_target_learn_eval_specs,
     _load_eval_task_specs,
+    _override_eval_specs_hunters_in_zone,
     _print_domain_randomization_settings,
     _resolve_eval_max_hunters_num,
     _resolve_train_max_hunters_num,
@@ -188,19 +189,71 @@ def main_one_glob(args, model_glob):
     )
 
     envs = make_train_env(merged_cfg, train_max_hunters_num=train_max_hunters_num)
-    eval_envs = make_eval_env(
-        merged_cfg,
-        eval_task_specs,
-        eval_max_hunters_num=eval_max_hunters_num,
-    )
+    eval_envs = None
+    eval_envs_zone_false = None
+    eval_envs_zone_true = None
     eval_envs_target_learn = None
-    if str(merged_cfg.env.target_policy_source).lower() == "learn":
-        eval_task_specs_target_learn = _build_target_learn_eval_specs(eval_task_specs)
-        eval_envs_target_learn = make_eval_env(
+    eval_envs_target_learn_zone_false = None
+    eval_envs_target_learn_zone_true = None
+    eval_task_specs_zone_false = None
+    eval_task_specs_zone_true = None
+    eval_task_specs_target_learn = None
+    eval_task_specs_target_learn_zone_false = None
+    eval_task_specs_target_learn_zone_true = None
+
+    use_dual_zone_eval = bool(from_external_file) and (eval_task_specs is not None)
+    if use_dual_zone_eval:
+        eval_task_specs_zone_false = _override_eval_specs_hunters_in_zone(
+            eval_task_specs,
+            hunters_in_zone=False,
+        )
+        eval_task_specs_zone_true = _override_eval_specs_hunters_in_zone(
+            eval_task_specs,
+            hunters_in_zone=True,
+        )
+        eval_envs_zone_false = make_eval_env(
             merged_cfg,
-            eval_task_specs_target_learn,
+            eval_task_specs_zone_false,
             eval_max_hunters_num=eval_max_hunters_num,
         )
+        eval_envs_zone_true = make_eval_env(
+            merged_cfg,
+            eval_task_specs_zone_true,
+            eval_max_hunters_num=eval_max_hunters_num,
+        )
+        eval_envs = eval_envs_zone_false
+
+        if str(merged_cfg.env.target_policy_source).lower() == "learn":
+            eval_task_specs_target_learn_zone_false = _build_target_learn_eval_specs(
+                eval_task_specs_zone_false
+            )
+            eval_task_specs_target_learn_zone_true = _build_target_learn_eval_specs(
+                eval_task_specs_zone_true
+            )
+            eval_envs_target_learn_zone_false = make_eval_env(
+                merged_cfg,
+                eval_task_specs_target_learn_zone_false,
+                eval_max_hunters_num=eval_max_hunters_num,
+            )
+            eval_envs_target_learn_zone_true = make_eval_env(
+                merged_cfg,
+                eval_task_specs_target_learn_zone_true,
+                eval_max_hunters_num=eval_max_hunters_num,
+            )
+            eval_envs_target_learn = eval_envs_target_learn_zone_false
+    else:
+        eval_envs = make_eval_env(
+            merged_cfg,
+            eval_task_specs,
+            eval_max_hunters_num=eval_max_hunters_num,
+        )
+        if str(merged_cfg.env.target_policy_source).lower() == "learn":
+            eval_task_specs_target_learn = _build_target_learn_eval_specs(eval_task_specs)
+            eval_envs_target_learn = make_eval_env(
+                merged_cfg,
+                eval_task_specs_target_learn,
+                eval_max_hunters_num=eval_max_hunters_num,
+            )
 
     # Step 4: 构建Runner并执行“重载模型目录评估”
     from runner.uav.role_runner import RoleBasedRunner as Runner
@@ -209,7 +262,23 @@ def main_one_glob(args, model_glob):
     runner_cfg = {
         "envs": envs,
         "eval_envs": eval_envs,
+        "eval_envs_zone_false": eval_envs_zone_false,
+        "eval_envs_zone_true": eval_envs_zone_true,
         "eval_envs_target_learn": eval_envs_target_learn,
+        "eval_envs_target_learn_zone_false": eval_envs_target_learn_zone_false,
+        "eval_envs_target_learn_zone_true": eval_envs_target_learn_zone_true,
+        "eval_task_specs": eval_task_specs,
+        "eval_task_specs_zone_false": eval_task_specs_zone_false,
+        "eval_task_specs_zone_true": eval_task_specs_zone_true,
+        "eval_task_specs_target_learn": (
+            eval_task_specs_target_learn if eval_envs_target_learn is not None else None
+        ),
+        "eval_task_specs_target_learn_zone_false": (
+            eval_task_specs_target_learn_zone_false if eval_envs_target_learn_zone_false is not None else None
+        ),
+        "eval_task_specs_target_learn_zone_true": (
+            eval_task_specs_target_learn_zone_true if eval_envs_target_learn_zone_true is not None else None
+        ),
         "device": device,
         "run_dir": run_dir,
         "num_agents": num_agents,
@@ -238,8 +307,16 @@ def main_one_glob(args, model_glob):
     envs.close()
     if eval_envs is not envs:
         eval_envs.close()
+    if eval_envs_zone_false is not None and eval_envs_zone_false is not envs:
+        eval_envs_zone_false.close()
+    if eval_envs_zone_true is not None and eval_envs_zone_true is not envs:
+        eval_envs_zone_true.close()
     if eval_envs_target_learn is not None and eval_envs_target_learn is not envs:
         eval_envs_target_learn.close()
+    if eval_envs_target_learn_zone_false is not None and eval_envs_target_learn_zone_false is not envs:
+        eval_envs_target_learn_zone_false.close()
+    if eval_envs_target_learn_zone_true is not None and eval_envs_target_learn_zone_true is not envs:
+        eval_envs_target_learn_zone_true.close()
     runner.writter.close()
 
 

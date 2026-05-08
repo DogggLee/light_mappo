@@ -69,6 +69,12 @@ class RoleBasedRunner(object):
         self.eval_envs_target_learn_zone_true = (
             runner_cfg["eval_envs_target_learn_zone_true"] if "eval_envs_target_learn_zone_true" in runner_cfg else None
         )
+        self.eval_task_specs = runner_cfg.get("eval_task_specs", None)
+        self.eval_task_specs_zone_false = runner_cfg.get("eval_task_specs_zone_false", None)
+        self.eval_task_specs_zone_true = runner_cfg.get("eval_task_specs_zone_true", None)
+        self.eval_task_specs_target_learn = runner_cfg.get("eval_task_specs_target_learn", None)
+        self.eval_task_specs_target_learn_zone_false = runner_cfg.get("eval_task_specs_target_learn_zone_false", None)
+        self.eval_task_specs_target_learn_zone_true = runner_cfg.get("eval_task_specs_target_learn_zone_true", None)
         self.device = runner_cfg["device"]
         self.run_dir = runner_cfg["run_dir"]
         self.num_agents = int(runner_cfg["num_agents"])
@@ -141,6 +147,9 @@ class RoleBasedRunner(object):
         self.time_stat = bool(runner_cfg.get("time_stat", False))
         self.eval_step_render = bool(getattr(self.cfg.eval, "step_render", False))
         self.eval_step_plot = bool(getattr(self.cfg.eval, "step_plot", False))
+        self.eval_bucket_group_by = self._normalize_eval_bucket_group_by(
+            getattr(self.cfg.eval, "bucket_group_by", ["num_hunters"])
+        )
 
         self.best_eval_metrics = {
             "reward": -np.inf,
@@ -2062,15 +2071,19 @@ class RoleBasedRunner(object):
             "captured_episodes": int(captured_episodes),
             "total_eval_episodes": int(total_eval_episodes),
         }
-        eval_metrics_by_hunters = self._build_eval_metrics_by_hunter_count(
-            env_episode_rewards=env_episode_rewards,
-            env_captured=env_captured,
-            env_capture_step=env_capture_step,
-            env_alive_rate=env_alive_rate,
-            env_active_hunter_count=env_active_hunter_count,
-            env_escape_gap_angle_mean=env_capture_escape_gap_angle,
-            env_capture_spread_reward=env_capture_spread_reward,
-        )
+        eval_metrics_by_group = {}
+        for group_key in self.eval_bucket_group_by:
+            eval_metrics_by_group[str(group_key)] = self._build_eval_metrics_by_group_key(
+                bucket=bucket,
+                group_key=str(group_key),
+                env_episode_rewards=env_episode_rewards,
+                env_captured=env_captured,
+                env_capture_step=env_capture_step,
+                env_alive_rate=env_alive_rate,
+                env_active_hunter_count=env_active_hunter_count,
+                env_escape_gap_angle_mean=env_capture_escape_gap_angle,
+                env_capture_spread_reward=env_capture_spread_reward,
+            )
 
         self._print_metric_table(
             "EvalMetrics[{}]".format(str(bucket)),
@@ -2111,21 +2124,24 @@ class RoleBasedRunner(object):
                 captured_episodes=captured_episodes,
                 total_eval_episodes=total_eval_episodes,
             )
-            for hunter_count, grouped_metrics in sorted(eval_metrics_by_hunters.items(), key=lambda x: int(x[0])):
-                self._append_eval_csv(
-                    episode=episode,
-                    total_num_steps=total_num_steps,
-                    bucket=f"{str(bucket)}_num_hunters_{int(hunter_count)}",
-                    eval_reward=float(grouped_metrics["eval_reward"]),
-                    capture_rate=float(grouped_metrics["capture_rate"]),
-                    capture_steps=float(grouped_metrics["capture_steps"]),
-                    capture_steps_objective=float(grouped_metrics.get("capture_steps_objective", grouped_metrics["capture_steps"])),
-                    alive_rate=float(grouped_metrics["alive_rate"]),
-                    max_escape_gap_angle=float(grouped_metrics["max_escape_gap_angle"]),
-                    capture_spread_reward=float(grouped_metrics["capture_spread_reward"]),
-                    captured_episodes=int(grouped_metrics["captured_episodes"]),
-                    total_eval_episodes=int(grouped_metrics["total_eval_episodes"]),
-                )
+            for group_key, grouped_entries in eval_metrics_by_group.items():
+                for grouped_metrics in grouped_entries:
+                    self._append_eval_csv(
+                        episode=episode,
+                        total_num_steps=total_num_steps,
+                        bucket=f"{str(bucket)}_{str(group_key)}_{str(grouped_metrics['group_value_label'])}",
+                        eval_reward=float(grouped_metrics["eval_reward"]),
+                        capture_rate=float(grouped_metrics["capture_rate"]),
+                        capture_steps=float(grouped_metrics["capture_steps"]),
+                        capture_steps_objective=float(
+                            grouped_metrics.get("capture_steps_objective", grouped_metrics["capture_steps"])
+                        ),
+                        alive_rate=float(grouped_metrics["alive_rate"]),
+                        max_escape_gap_angle=float(grouped_metrics["max_escape_gap_angle"]),
+                        capture_spread_reward=float(grouped_metrics["capture_spread_reward"]),
+                        captured_episodes=int(grouped_metrics["captured_episodes"]),
+                        total_eval_episodes=int(grouped_metrics["total_eval_episodes"]),
+                    )
 
         if save_gifs:
             out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
@@ -2144,13 +2160,15 @@ class RoleBasedRunner(object):
 
         out_dir = Path(self.gif_dir) if gif_output_dir is None else Path(gif_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        self._update_eval_hunter_bucket_plot(
-            episode=episode,
-            total_num_steps=total_num_steps,
-            bucket=bucket,
-            eval_metrics_by_hunters=eval_metrics_by_hunters,
-            output_dir=out_dir,
-        )
+        for group_key, grouped_entries in eval_metrics_by_group.items():
+            self._update_eval_hunter_bucket_plot(
+                episode=episode,
+                total_num_steps=total_num_steps,
+                bucket=bucket,
+                group_key=str(group_key),
+                grouped_entries=grouped_entries,
+                output_dir=out_dir,
+            )
         return eval_metrics
 
     @torch.no_grad()
@@ -3404,6 +3422,229 @@ class RoleBasedRunner(object):
             }
         return out
 
+    def _normalize_eval_bucket_group_by(self, raw_group_by):
+        """
+        功能:
+            规范化评估分桶字段配置，统一为非空字段名列表。
+        输入:
+            raw_group_by (Any): 配置中的分桶字段，可为字符串、列表或None。
+        输出:
+            list[str]: 规范化后的字段名列表；为空时回退到["num_hunters"]。
+        """
+        if raw_group_by is None:
+            return ["num_hunters"]
+        if isinstance(raw_group_by, (list, tuple)):
+            tokens = [str(x).strip() for x in list(raw_group_by)]
+        else:
+            tokens = [x.strip() for x in str(raw_group_by).split(",")]
+        out = []
+        seen = set()
+        for token in tokens:
+            normalized = str(token).strip().strip("\"'")
+            if not normalized:
+                continue
+            if normalized not in seen:
+                out.append(str(normalized))
+                seen.add(str(normalized))
+        return out if len(out) > 0 else ["num_hunters"]
+
+    def _slugify_bucket_group_name(self, group_key):
+        """
+        功能:
+            将分桶字段名转换为安全文件名片段。
+        输入:
+            group_key (str): 分桶字段名。
+        输出:
+            str: 安全字段名片段。
+        """
+        safe_chars = []
+        for ch in str(group_key):
+            if ch.isalnum() or ch in ("-", "_"):
+                safe_chars.append(ch)
+            else:
+                safe_chars.append("_")
+        safe = "".join(safe_chars).strip("_")
+        return safe or "bucket"
+
+    def _get_eval_task_specs_for_bucket(self, bucket):
+        """
+        功能:
+            根据评估桶名称返回对齐的任务spec列表。
+        输入:
+            bucket (str): 当前评估桶名称。
+        输出:
+            list[dict] | None: 与评估环境顺序一致的任务spec列表；未知时返回None。
+        """
+        bucket_name = str(bucket)
+        if bucket_name == "fixed_zone_false":
+            return self.eval_task_specs_zone_false
+        if bucket_name == "fixed_zone_true":
+            return self.eval_task_specs_zone_true
+        if bucket_name == "target_learn_zone_false":
+            return self.eval_task_specs_target_learn_zone_false
+        if bucket_name == "target_learn_zone_true":
+            return self.eval_task_specs_target_learn_zone_true
+        if bucket_name in ("target_learn", "learn"):
+            return self.eval_task_specs_target_learn
+        return self.eval_task_specs
+
+    def _format_eval_group_value_label(self, value):
+        """
+        功能:
+            将分桶值格式化为展示与CSV命名使用的短字符串。
+        输入:
+            value (Any): 原始分桶值。
+        输出:
+            str: 格式化后的分桶值标签。
+        """
+        if value is None:
+            return "NA"
+        if isinstance(value, (bool, np.bool_)):
+            return "true" if bool(value) else "false"
+        if isinstance(value, (int, np.integer)):
+            return str(int(value))
+        if isinstance(value, (float, np.floating)):
+            if not np.isfinite(float(value)):
+                return "NA"
+            return "{:g}".format(float(value))
+        return str(value)
+
+    def _to_eval_group_numeric_value(self, value):
+        """
+        功能:
+            尝试将分桶值转换为可直接用于横轴绘图的数值。
+        输入:
+            value (Any): 原始分桶值。
+        输出:
+            float | None: 可转换时返回数值，否则返回None。
+        """
+        if value is None:
+            return None
+        if isinstance(value, (bool, np.bool_)):
+            return 1.0 if bool(value) else 0.0
+        if isinstance(value, (int, np.integer, float, np.floating)):
+            if np.isfinite(float(value)):
+                return float(value)
+            return None
+        return None
+
+    def _build_eval_metrics_by_group_key(
+        self,
+        bucket,
+        group_key,
+        env_episode_rewards,
+        env_captured,
+        env_capture_step,
+        env_alive_rate,
+        env_active_hunter_count,
+        env_escape_gap_angle_mean,
+        env_capture_spread_reward,
+    ):
+        """
+        功能:
+            按指定任务字段或num_hunters对评估结果做分桶聚合。
+        输入:
+            bucket (str): 当前评估桶名称。
+            group_key (str): 分桶字段名。
+            env_* (np.ndarray): 各环境原始评估指标数组。
+        输出:
+            list[dict]: 已排序的分桶聚合结果列表。
+        """
+        rewards = np.asarray(env_episode_rewards, dtype=np.float32).reshape(-1)
+        captured_flags = np.asarray(env_captured, dtype=bool).reshape(-1)
+        capture_steps = np.asarray(env_capture_step, dtype=np.int32).reshape(-1)
+        alive_rates = np.asarray(env_alive_rate, dtype=np.float32).reshape(-1)
+        hunter_counts = np.asarray(env_active_hunter_count, dtype=np.int32).reshape(-1)
+        escape_gap_means = np.asarray(env_escape_gap_angle_mean, dtype=np.float32).reshape(-1)
+        capture_spread_vals = np.asarray(env_capture_spread_reward, dtype=np.float32).reshape(-1)
+        n_env = int(rewards.shape[0])
+
+        if str(group_key) == "num_hunters":
+            group_values = [int(x) for x in hunter_counts.tolist()]
+        else:
+            specs = self._get_eval_task_specs_for_bucket(bucket)
+            if specs is None or len(specs) != n_env:
+                return []
+            group_values = [dict(specs[i]).get(str(group_key), None) for i in range(n_env)]
+
+        grouped_indices = {}
+        for idx, group_value in enumerate(group_values):
+            group_label = self._format_eval_group_value_label(group_value)
+            if group_label not in grouped_indices:
+                grouped_indices[group_label] = {
+                    "raw_value": group_value,
+                    "indices": [],
+                }
+            grouped_indices[group_label]["indices"].append(int(idx))
+
+        out = []
+        for group_label, payload in grouped_indices.items():
+            raw_value = payload["raw_value"]
+            indices = np.asarray(payload["indices"], dtype=np.int32)
+            mask = np.zeros(n_env, dtype=bool)
+            mask[indices] = True
+            if not bool(np.any(mask)):
+                continue
+
+            total_eval_episodes = int(np.sum(mask))
+            captured_episodes = int(np.sum(captured_flags[mask]))
+            grouped_capture_steps = [int(x) for x in capture_steps[mask] if int(x) > 0]
+            mean_capture_steps = (
+                float(np.mean(grouped_capture_steps))
+                if len(grouped_capture_steps) > 0
+                else float(self.eval_episode_length)
+            )
+            grouped_capture_step_objective = []
+            for local_idx in np.where(mask)[0]:
+                if bool(captured_flags[local_idx]) and int(capture_steps[local_idx]) > 0:
+                    grouped_capture_step_objective.append(int(capture_steps[local_idx]))
+                else:
+                    grouped_capture_step_objective.append(int(self.eval_episode_length))
+            mean_capture_steps_objective = (
+                float(np.mean(grouped_capture_step_objective))
+                if len(grouped_capture_step_objective) > 0
+                else float(self.eval_episode_length)
+            )
+            grouped_escape_angles = escape_gap_means[
+                np.logical_and(mask, np.logical_and(captured_flags, np.isfinite(escape_gap_means)))
+            ]
+            grouped_escape_angle_mean = (
+                float(np.mean(grouped_escape_angles))
+                if grouped_escape_angles.size > 0
+                else float("nan")
+            )
+            grouped_capture_spread = capture_spread_vals[
+                np.logical_and(mask, np.logical_and(captured_flags, np.isfinite(capture_spread_vals)))
+            ]
+            grouped_capture_spread_mean = (
+                float(np.mean(grouped_capture_spread))
+                if grouped_capture_spread.size > 0
+                else float("nan")
+            )
+            out.append(
+                {
+                    "group_key": str(group_key),
+                    "group_value": raw_value,
+                    "group_value_label": str(group_label),
+                    "x_numeric": self._to_eval_group_numeric_value(raw_value),
+                    "eval_reward": float(np.mean(rewards[mask])) if total_eval_episodes > 0 else 0.0,
+                    "capture_rate": float(captured_episodes / max(1, total_eval_episodes)),
+                    "capture_steps": float(mean_capture_steps),
+                    "capture_steps_objective": float(mean_capture_steps_objective),
+                    "alive_rate": float(np.mean(alive_rates[mask])) if total_eval_episodes > 0 else 0.0,
+                    "max_escape_gap_angle": float(grouped_escape_angle_mean),
+                    "capture_spread_reward": float(grouped_capture_spread_mean),
+                    "captured_episodes": int(captured_episodes),
+                    "total_eval_episodes": int(total_eval_episodes),
+                }
+            )
+
+        if all(item["x_numeric"] is not None for item in out):
+            out.sort(key=lambda item: float(item["x_numeric"]))
+        else:
+            out.sort(key=lambda item: str(item["group_value_label"]))
+        return out
+
     def _canonical_eval_bucket_name(self, bucket):
         """
         功能:
@@ -3428,28 +3669,30 @@ class RoleBasedRunner(object):
         episode,
         total_num_steps,
         bucket,
-        eval_metrics_by_hunters,
+        group_key,
+        grouped_entries,
         output_dir,
     ):
         """
         功能:
-            更新评估分桶缓存并输出“指标-随hunter数量变化”曲线图。
+            更新评估分桶缓存并输出“指标-随分桶变量变化”曲线图。
         输入:
             episode (int): 当前episode编号。
             total_num_steps (int): 当前累计环境步数。
             bucket (str): 当前评估桶名称。
-            eval_metrics_by_hunters (dict[int, dict]): 当前bucket的分桶指标。
+            group_key (str): 当前分桶字段名。
+            grouped_entries (list[dict]): 当前bucket的分桶聚合结果。
             output_dir (Path): 图像输出目录。
         输出:
             无。
         """
         # Step 1: 构建缓存键并写入当前bucket数据。
         out_dir = Path(output_dir)
-        cache_key = (str(out_dir.resolve()), int(episode), int(total_num_steps))
+        cache_key = (str(out_dir.resolve()), int(episode), int(total_num_steps), str(group_key))
         if cache_key not in self.eval_hunter_bucket_metrics_cache:
             self.eval_hunter_bucket_metrics_cache[cache_key] = {}
         canonical_bucket = self._canonical_eval_bucket_name(bucket)
-        self.eval_hunter_bucket_metrics_cache[cache_key][canonical_bucket] = dict(eval_metrics_by_hunters)
+        self.eval_hunter_bucket_metrics_cache[cache_key][canonical_bucket] = list(grouped_entries)
 
         # Step 2: 基于当前可用桶绘制并覆盖保存同名图。
         bucket_to_metrics = self.eval_hunter_bucket_metrics_cache[cache_key]
@@ -3490,21 +3733,33 @@ class RoleBasedRunner(object):
         plot_export = {
             "episode": int(episode),
             "total_num_steps": int(total_num_steps),
+            "group_by": str(group_key),
             "buckets": {},
         }
         for idx, metric_name in enumerate(metrics_order):
             ax = axes[idx]
             x_ticks = set()
+            x_tick_labels = {}
+            use_categorical_axis = False
             for bucket_name in bucket_plot_order:
                 if bucket_name not in bucket_to_metrics:
                     continue
                 grouped = bucket_to_metrics[bucket_name]
                 if grouped is None or len(grouped) == 0:
                     continue
-                x_vals = sorted([int(k) for k in grouped.keys()])
+                x_vals = []
+                x_labels = []
                 y_vals = []
-                for hc in x_vals:
-                    metric_val = float(grouped[int(hc)].get(metric_name, float("nan")))
+                for pos, entry in enumerate(grouped):
+                    x_numeric = entry.get("x_numeric", None)
+                    if x_numeric is None:
+                        use_categorical_axis = True
+                        x_val = float(pos)
+                    else:
+                        x_val = float(x_numeric)
+                    x_vals.append(float(x_val))
+                    x_labels.append(str(entry.get("group_value_label", "")))
+                    metric_val = float(entry.get(metric_name, float("nan")))
                     if metric_name == "max_escape_gap_angle":
                         # 统一将弧度制指标转换为角度（度）后绘图。
                         if np.isfinite(metric_val):
@@ -3512,7 +3767,9 @@ class RoleBasedRunner(object):
                         else:
                             metric_val = 360.0
                     y_vals.append(float(metric_val))
-                x_ticks.update(x_vals)
+                for x_val, x_label in zip(x_vals, x_labels):
+                    x_ticks.add(float(x_val))
+                    x_tick_labels[float(x_val)] = str(x_label)
                 style = bucket_style[bucket_name]
                 ax.plot(
                     x_vals,
@@ -3528,7 +3785,7 @@ class RoleBasedRunner(object):
                         best_pos = int(np.argmax(np.asarray(y_vals, dtype=np.float32)))
                     else:
                         best_pos = int(np.argmin(np.asarray(y_vals, dtype=np.float32)))
-                    best_x = int(x_vals[best_pos])
+                    best_x = float(x_vals[best_pos])
                     best_y = float(y_vals[best_pos])
                     ax.scatter(
                         [best_x],
@@ -3549,13 +3806,17 @@ class RoleBasedRunner(object):
                 if bucket_name not in plot_export["buckets"]:
                     plot_export["buckets"][bucket_name] = {}
                 plot_export["buckets"][bucket_name][metric_name] = {
-                    "x": [int(x) for x in x_vals],
+                    "x": [float(x) for x in x_vals],
+                    "x_labels": [str(x) for x in x_labels],
                     "y": [float(y) for y in y_vals],
                 }
             ax.set_title(metric_titles[metric_name])
-            ax.set_xlabel("Number of Hunters")
+            ax.set_xlabel(str(group_key))
             if len(x_ticks) > 0:
-                ax.set_xticks(sorted([int(x) for x in x_ticks]))
+                tick_vals = sorted([float(x) for x in x_ticks])
+                ax.set_xticks(tick_vals)
+                if bool(use_categorical_axis):
+                    ax.set_xticklabels([x_tick_labels[float(x)] for x in tick_vals], rotation=20)
             ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.4)
             if metric_name in ("capture_rate", "alive_rate"):
                 ax.set_ylim(0.0, 1.0)
@@ -3567,15 +3828,21 @@ class RoleBasedRunner(object):
                 ax.legend(loc="best")
 
         fig.suptitle(
-            "Eval Metrics vs Hunters | episode={} | steps={}".format(int(episode), int(total_num_steps))
+            "Eval Metrics vs {} | episode={} | steps={}".format(
+                str(group_key), int(episode), int(total_num_steps)
+            )
         )
         fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.97])
-        out_path = out_dir / f"eval_hunter_bucket_metrics_ep_{int(episode)}.png"
+        if str(group_key) == "num_hunters":
+            stem = f"eval_hunter_bucket_metrics_ep_{int(episode)}"
+        else:
+            stem = f"eval_bucket_metrics_by_{self._slugify_bucket_group_name(group_key)}_ep_{int(episode)}"
+        out_path = out_dir / f"{stem}.png"
         fig.savefig(str(out_path))
         plt.close(fig)
 
         # Step 3: 导出可复绘数据，便于后续跨模型分桶对比脚本直接读取。
-        json_path = out_dir / f"eval_hunter_bucket_metrics_ep_{int(episode)}.json"
+        json_path = out_dir / f"{stem}.json"
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(plot_export, f, ensure_ascii=False, indent=2)
 
@@ -3982,25 +4249,32 @@ class RoleBasedRunner(object):
         # Step 1: 准备路径与通配模式。
         dst = Path(dst_dir)
         dst.mkdir(parents=True, exist_ok=True)
-        png_name = f"eval_hunter_bucket_metrics_ep_{int(episode)}.png"
-        json_name = f"eval_hunter_bucket_metrics_ep_{int(episode)}.json"
-        png_src = Path(self.gif_dir) / png_name
-        json_src = Path(self.gif_dir) / json_name
+        candidate_patterns = [
+            f"eval_hunter_bucket_metrics_ep_{int(episode)}.png",
+            f"eval_hunter_bucket_metrics_ep_{int(episode)}.json",
+            f"eval_bucket_metrics_by_*_ep_{int(episode)}.png",
+            f"eval_bucket_metrics_by_*_ep_{int(episode)}.json",
+        ]
 
-        # Step 2: 优先复制同episode文件；不存在时回退到最新同前缀文件。
-        if png_src.exists():
-            shutil.copy2(str(png_src), str(dst / png_name))
-        else:
-            png_candidates = sorted(Path(self.gif_dir).glob("eval_hunter_bucket_metrics_ep_*.png"))
-            if len(png_candidates) > 0:
-                shutil.copy2(str(png_candidates[-1]), str(dst / png_candidates[-1].name))
+        copied_any = False
+        for pattern in candidate_patterns:
+            for src in sorted(Path(self.gif_dir).glob(pattern)):
+                shutil.copy2(str(src), str(dst / src.name))
+                copied_any = True
 
-        if json_src.exists():
-            shutil.copy2(str(json_src), str(dst / json_name))
-        else:
-            json_candidates = sorted(Path(self.gif_dir).glob("eval_hunter_bucket_metrics_ep_*.json"))
-            if len(json_candidates) > 0:
-                shutil.copy2(str(json_candidates[-1]), str(dst / json_candidates[-1].name))
+        if copied_any:
+            return
+
+        fallback_patterns = [
+            "eval_hunter_bucket_metrics_ep_*.png",
+            "eval_hunter_bucket_metrics_ep_*.json",
+            "eval_bucket_metrics_by_*_ep_*.png",
+            "eval_bucket_metrics_by_*_ep_*.json",
+        ]
+        for pattern in fallback_patterns:
+            candidates = sorted(Path(self.gif_dir).glob(pattern))
+            if len(candidates) > 0:
+                shutil.copy2(str(candidates[-1]), str(dst / candidates[-1].name))
 
     def _load_models_from_dir(self, model_dir):
         """

@@ -814,6 +814,16 @@ def main(args):
             "eval_envs_target_learn": eval_envs_target_learn,
             "eval_envs_target_learn_zone_false": eval_envs_target_learn_zone_false,
             "eval_envs_target_learn_zone_true": eval_envs_target_learn_zone_true,
+            "eval_task_specs": eval_task_specs,
+            "eval_task_specs_zone_false": eval_task_specs_zone_false if eval_envs_zone_false is not None else None,
+            "eval_task_specs_zone_true": eval_task_specs_zone_true if eval_envs_zone_true is not None else None,
+            "eval_task_specs_target_learn": eval_task_specs_target_learn,
+            "eval_task_specs_target_learn_zone_false": (
+                eval_task_specs_target_learn_zone_false if eval_envs_target_learn_zone_false is not None else None
+            ),
+            "eval_task_specs_target_learn_zone_true": (
+                eval_task_specs_target_learn_zone_true if eval_envs_target_learn_zone_true is not None else None
+            ),
             "device": device,
             "run_dir": run_dir,
             "num_agents": num_agents,
