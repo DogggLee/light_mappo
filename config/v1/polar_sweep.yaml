@@ -4,7 +4,7 @@ max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: rel_spdN_dead_spd4_Ablation
+env_name: rel_spdN_dead_spd4_Ablation_fullb100Eval
 progress_interval_sec: 300
 progress_topk: 3
 

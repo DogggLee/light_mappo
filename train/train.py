@@ -749,6 +749,11 @@ def main(args):
         eval_envs_target_learn = None
         eval_envs_target_learn_zone_false = None
         eval_envs_target_learn_zone_true = None
+        eval_task_specs_zone_false = None
+        eval_task_specs_zone_true = None
+        eval_task_specs_target_learn = None
+        eval_task_specs_target_learn_zone_false = None
+        eval_task_specs_target_learn_zone_true = None
         if bool(merged_cfg.eval.use_eval):
             use_dual_zone_eval = bool(from_external_file) and (eval_task_specs is not None)
             if use_dual_zone_eval:
