@@ -4,7 +4,7 @@ max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: rel_spdN_dead_spd4_Ablation_fullb100Eval
+env_name: rel_spdN_dead_legacy_spd4_Ablation
 progress_interval_sec: 300
 progress_topk: 3
 
@@ -20,7 +20,7 @@ parameters:
   env.hunter_collision_state_mode:
     values: [dead]
   reward.base_reward_mode:
-    values: [delta_window]
+    values: [legacy]
   
   reward.capture_reward_allocation:
     values: [spread]

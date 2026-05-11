@@ -1,6 +1,6 @@
 exp:
-  algorithm_name: rmappo
-  experiment_name: [Base+legacy+AllocSpd]
+  algorithm_name: matd3
+  experiment_name: matd3
   seed: 1
   num_env_steps: 2000000 # total environment steps to train
   role_buffer_mode: role_shared  # Choices: ["separate", "role_shared"]
@@ -11,7 +11,7 @@ exp:
 
 # Environment settings (common)
 env:
-  env_name: rel_spdN_dead_spd4_Ablation
+  env_name: Full_algo_ablation
   world_size: 200
   episode_length: 300 # max steps per episode
   max_hunters_num: 3
@@ -20,6 +20,7 @@ env:
   own_obs_items: ["speed_norm"]
   action_frame: local
   hunter_collision_state_mode: dead  # Choices: ["dead", "collided"]
+
 
   neighbor_N: 3
   coord_summary_obs_enable: false
@@ -49,7 +50,7 @@ reward:
   safe_zone_penalty_scale: 1.0
   
   # Base chase reward
-  base_reward_mode: legacy  # Choices: ["legacy", "delta_window"]
+  base_reward_mode: delta_window  # Choices: ["legacy", "delta_window"]
   
   base_far_scale: 0.5
   base_near_scale: 2.0
@@ -68,7 +69,7 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_enable: false
+  spread_reward_enable: true
   spread_reward_coef: 4.0
 
   # Capture reward
@@ -129,7 +130,7 @@ domain_randomization:
     patrol_name_choices: ["all"]
 
 curriculum:
-  enable: false
+  enable: true
   stages:
     - name: warmup_small_map
       start_ratio: 0.0
