@@ -4,6 +4,7 @@ Rule-based baseline demo on the same eval_envs pipeline as train/train.py.
 支持规则:
 - angelani
 - janosov
+- simple_chase
 """
 
 import argparse
@@ -252,13 +253,42 @@ def _janosov_action(core_env, hid, alive_ids, rule_cfg):
     return _clip_action(action_global)
 
 
+def _simple_chase_action(core_env, hid):
+    """
+    功能:
+        计算简单直接追击动作：尽量以最大速度朝Target运动，
+        若一步内可到达则按剩余距离给出更小速度指令。
+    输入:
+        core_env (EnvCore): 底层环境实例。
+        hid (int): hunter索引。
+    输出:
+        np.ndarray: shape=(2,) 全局归一化动作。
+    """
+    hunter = core_env.hunters[int(hid)]
+    target = core_env.target
+
+    hunter_pos = np.asarray(hunter.position, dtype=np.float32)
+    target_pos = np.asarray(target.position, dtype=np.float32)
+    to_target = target_pos - hunter_pos
+    dist = float(np.linalg.norm(to_target))
+    if dist <= 1e-8:
+        return np.zeros(2, dtype=np.float32)
+
+    direction = to_target / dist
+    dt = float(max(1e-8, core_env.dt))
+    step_reachable_dist = float(max(1e-8, float(hunter.max_speed) * dt))
+    speed_ratio = float(min(1.0, dist / step_reachable_dist))
+    action_global = direction * speed_ratio
+    return _clip_action(action_global)
+
+
 def _build_actions_for_env(core_env, rule_name, rule_cfg):
     """
     功能:
         为单环境构建所有agent动作。
     输入:
         core_env (EnvCore): 底层环境实例。
-        rule_name (str): 规则名称（angelani/janosov）。
+        rule_name (str): 规则名称（angelani/janosov/simple_chase）。
     输出:
         np.ndarray: shape=(agent_num,2) 动作数组。
     """
@@ -277,6 +307,8 @@ def _build_actions_for_env(core_env, rule_name, rule_cfg):
             action_global = _angelani_action(core_env, int(hid), rule_cfg=rule_cfg)
         elif str(rule_name) == "janosov":
             action_global = _janosov_action(core_env, int(hid), alive_ids, rule_cfg=rule_cfg)
+        elif str(rule_name) == "simple_chase":
+            action_global = _simple_chase_action(core_env, int(hid))
         else:
             raise ValueError("Unsupported rule: {}".format(str(rule_name)))
         actions[int(hid)] = _to_env_action_frame(core_env, hunter, action_global)
@@ -901,13 +933,32 @@ def main():
         "--rule",
         type=str,
         required=True,
-        choices=["angelani", "janosov"],
+        choices=["angelani", "janosov", "simple_chase"],
         help="Rule policy name.",
+    )
+    parser.add_argument(
+        "--fixed_tasks_file",
+        type=str,
+        required=False,
+        help="Optional override for eval.fixed_tasks_file used by rule demo.",
+    )
+    parser.add_argument(
+        "--task_file",
+        type=str,
+        required=False,
+        help="Alias of --fixed_tasks_file, matching scripts/batch_eval_best_models.py.",
     )
     parser.add_argument("--output_dir", type=str, required=False, help="Optional output directory.")
     args = parser.parse_args()
 
     cfg = load_config(args.config_file)
+    fixed_tasks_file = args.fixed_tasks_file
+    if args.task_file is not None:
+        if fixed_tasks_file is not None and str(args.task_file) != str(fixed_tasks_file):
+            raise ValueError("--task_file and --fixed_tasks_file must match when both are provided.")
+        fixed_tasks_file = str(args.task_file)
+    if fixed_tasks_file is not None:
+        cfg.eval.fixed_tasks_file = str(fixed_tasks_file)
     eval_task_specs, from_external_file = _load_eval_task_specs(cfg)
     if eval_task_specs is None:
         raise ValueError("Rule demo requires fixed eval tasks. Please set eval.fixed_tasks or eval.fixed_tasks_file.")
@@ -944,6 +995,7 @@ def main():
     json_result = {
         "rule": str(args.rule),
         "config_file": str(args.config_file),
+        "fixed_tasks_file": None if cfg.eval.fixed_tasks_file is None else str(cfg.eval.fixed_tasks_file),
         "eval_episode_length": int(eval_episode_length),
         "eval_max_hunters_num": int(eval_max_hunters_num),
         "buckets": {},
