@@ -1,0 +1,1404 @@
+{
+  "tasks": [
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10000,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_104"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10001,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_151"
+      ],
+      "hunters_in_zone": false,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10002,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_426"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10003,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "random",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_138"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10004,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_005"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10005,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_017"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10006,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_077"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10007,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_336"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10008,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "escape",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_452"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 1
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 2
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 4
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 6
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 8
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 10
+    },
+    {
+      "seed": 10009,
+      "capture_dis": 24.0,
+      "collision_dis": 3.0,
+      "hunter_safe_dis": 8.0,
+      "hunter_max_speed": 20.0,
+      "target_policy_source": "patrol",
+      "target_patrol_path": "datasets/train_patrol_routs.json",
+      "target_route_id": 0,
+      "target_patrol_names": [
+        "auto_306"
+      ],
+      "hunters_in_zone": true,
+      "target_hunter_zone_min_dis": 100.0,
+      "capture_dis_ratio": 1.2,
+      "capture_step": 10,
+      "target_max_speed_ratio": 1.2,
+      "world_size": 400.0,
+      "num_hunters": 15
+    }
+  ]
+}
