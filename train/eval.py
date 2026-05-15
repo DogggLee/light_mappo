@@ -299,6 +299,8 @@ def main_one_glob(args, model_glob):
         total_num_steps=total_num_steps,
         episode=episode,
         model_glob=model_glob,
+        save_gifs=args.save_gifs,
+        save_pngs=args.save_pngs,
         record_test_csv=True,
     )
     print("[EvalOnly] test eval csv written to {}".format(str(run_dir / "test_eval.csv")))
@@ -338,6 +340,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--plot",
+        action="store_true",
+        help="Plot per-step debug curves (hunter cumulative rewards and escape-gap metrics).",
+    )
+
+    parser.add_argument(
+        "--save_gifs",
+        action="store_true",
+        help="Plot per-step debug curves (hunter cumulative rewards and escape-gap metrics).",
+    )
+    parser.add_argument(
+        "--save_pngs",
         action="store_true",
         help="Plot per-step debug curves (hunter cumulative rewards and escape-gap metrics).",
     )
