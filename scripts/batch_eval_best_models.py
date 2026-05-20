@@ -322,6 +322,8 @@ def _build_eval_args(args, run_dir: Path):
         task_file=str(args.task_file),
         render=bool(args.render),
         plot=bool(args.plot),
+        save_gifs=bool(args.save_gifs),
+        save_pngs=bool(args.save_pngs),
         model_glob=args.model_glob,
     )
 
@@ -396,6 +398,8 @@ def main():
     parser.add_argument("--episode", type=int, default=None, help="Override episode id used in eval/GIF naming")
     parser.add_argument("--render", action="store_true", help="Render eval env at every step during evaluation")
     parser.add_argument("--plot", action="store_true", help="Plot per-step debug curves during evaluation")
+    parser.add_argument("--save_gifs", action="store_true", help="Save evaluation GIFs under each model res dir")
+    parser.add_argument("--save_pngs", action="store_true", help="Save evaluation PNG plots under each model res dir")
     parser.add_argument(
         "--aggregate_out",
         type=str,

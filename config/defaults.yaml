@@ -166,7 +166,7 @@ Target:
   safe_dis: 8
   control_mode: velocity
   max_acc: 2
-  max_turn_angle: -1
+  max_turn_angle: 180
   min_turn_limit_velo: 3.0
 
 reward:
