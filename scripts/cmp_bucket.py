@@ -58,6 +58,13 @@ def parse_args() -> argparse.Namespace:
         help="可选：指定使用的 bucket 名称（默认自动选择第一个）。",
     )
     parser.add_argument(
+        "--x_values",
+        type=float,
+        nargs="+",
+        default=None,
+        help="可选：只绘制并显示指定的x轴数值，例如 --x_values 1 4 6 8 10 15。",
+    )
+    parser.add_argument(
         "--out",
         type=str,
         default=None,
@@ -157,7 +164,7 @@ def _build_styles(
     for idx in range(num_curves):
         color = "black" if (use_line_style or use_marker) else color_cycle[idx % len(color_cycle)]
         linestyle = line_cycle[idx % len(line_cycle)] if use_line_style else "-"
-        marker = marker_cycle[idx % len(marker_cycle)] if use_marker else None
+        marker = marker_cycle[idx % len(marker_cycle)] if use_marker else 'o'
         styles.append({"color": color, "linestyle": linestyle, "marker": marker})
     return styles
 
@@ -168,6 +175,7 @@ def _plot_one_metric(
     names: List[str],
     styles: List[Dict[str, str | None]],
     bucket_name: str | None,
+    x_values: List[float] | None,
     metric_name: str,
     title: str,
     y_label: str,
@@ -182,6 +190,7 @@ def _plot_one_metric(
         names (List[str]): 对应曲线名称列表。
         styles (List[Dict[str, str | None]]): 对应曲线样式列表。
         bucket_name (str | None): 指定bucket名；None时自动选第一个。
+        x_values (List[float] | None): 指定要绘制和显示的x轴取值；None表示不筛选。
         metric_name (str): 指标名。
         title (str): 子图标题。
         y_label (str): y轴标签。
@@ -189,12 +198,20 @@ def _plot_one_metric(
     输出:
         str: 实际使用的bucket名称（用于总标题展示）。
     """
-    # Step 1: 循环加载并绘制每条曲线
+    # Step 1: 循环加载并绘制每条曲线，同时收集真实x坐标
     used_bucket_final = ""
+    x_ticks: List[float] = []
     for idx, (path, name) in enumerate(zip(json_paths, names)):
         x, y, used_bucket = _load_metric_xy(path, bucket_name, metric_name)
         used_bucket_final = used_bucket
+        if x_values is not None:
+            keep_mask = np.zeros_like(x, dtype=bool)
+            for x_value in x_values:
+                keep_mask = np.logical_or(keep_mask, np.isclose(x, float(x_value)))
+            x = x[keep_mask]
+            y = y[keep_mask]
         y = np.where(np.isfinite(y), y, np.nan)
+        x_ticks.extend([float(v) for v in x[np.isfinite(x)]])
         ax.plot(
             x,
             y,
@@ -207,8 +224,13 @@ def _plot_one_metric(
         )
 
     # Step 2: 设置坐标轴样式
+    if len(x_ticks) > 0:
+        sorted_x_ticks = sorted(set(x_ticks))
+        ax.set_xticks(sorted_x_ticks)
+        if all(float(v).is_integer() for v in sorted_x_ticks):
+            ax.set_xticklabels([str(int(v)) for v in sorted_x_ticks])
     ax.set_title(title, fontsize=font_size)
-    ax.set_xlabel("Num Hunters", fontsize=font_size)
+    ax.set_xlabel("Number of Pursuers", fontsize=font_size)
     ax.set_ylabel(y_label, fontsize=font_size)
     ax.tick_params(axis="both", labelsize=font_size)
     ax.grid(True, linestyle="--", alpha=0.3)
@@ -249,46 +271,17 @@ def main() -> None:
         names=list(args.names),
         styles=styles,
         bucket_name=args.bucket,
+        x_values=args.x_values,
         metric_name="capture_rate",
-        title="Capture Rate",
-        y_label="Rate",
+        title="",
+        y_label="Capture Rate (%)",
         font_size=int(args.font_size),
     )
-    axes[0].set_ylim(0.4, 1.0)
-    axes[0].set_yticks(np.linspace(0.4, 1.0, 7))
+    axes[0].set_ylim(0.0, 1.0)
+    # axes[0].set_yticks(np.linspace(0.3, 1.0, 7))
+    axes[0].set_yticks(np.linspace(0.0, 1.0, 11))
     axes[0].set_yticklabels(
-        [f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)],
-        fontsize=int(args.font_size),
-    )
-
-    _plot_one_metric(
-        ax=axes[1],
-        json_paths=json_paths,
-        names=list(args.names),
-        styles=styles,
-        bucket_name=used_bucket,
-        metric_name="capture_steps",
-        title="Capture Steps",
-        y_label="Steps",
-        font_size=int(args.font_size),
-    )
-    axes[1].set_ylim(100.0, 300.0)
-
-    _plot_one_metric(
-        ax=axes[2],
-        json_paths=json_paths,
-        names=list(args.names),
-        styles=styles,
-        bucket_name=used_bucket,
-        metric_name="alive_rate",
-        title="Alive Rate",
-        y_label="Rate",
-        font_size=int(args.font_size),
-    )
-    axes[2].set_ylim(0.4, 1.0)
-    axes[2].set_yticks(np.linspace(0.4, 1.0, 7))
-    axes[2].set_yticklabels(
-        [f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)],
+        [f"{int(v * 1)}%" for v in range(0, 110, 10)],
         fontsize=int(args.font_size),
     )
 
@@ -298,9 +291,48 @@ def main() -> None:
         names=list(args.names),
         styles=styles,
         bucket_name=used_bucket,
-        metric_name="max_escape_gap_angle",
-        title="Max Escape Gap",
-        y_label="Angle (deg)",
+        x_values=args.x_values,
+        metric_name="capture_steps",
+        title="Capture Steps",
+        y_label="Steps",
+        font_size=int(args.font_size),
+    )
+    axes[3].set_ylim(100.0, 200.0)
+
+    _plot_one_metric(
+        ax=axes[2],
+        json_paths=json_paths,
+        names=list(args.names),
+        styles=styles,
+        bucket_name=used_bucket,
+        x_values=args.x_values,
+        metric_name="alive_rate",
+        title="Alive Rate",
+        y_label="Rate",
+        font_size=int(args.font_size),
+    )
+    # axes[2].set_ylim(0.4, 1.0)
+    # axes[2].set_yticks(np.linspace(0.4, 1.0, 7))
+    # axes[2].set_yticklabels(
+    #     [f"{int(v * 100)}%" for v in np.linspace(0.4, 1.0, 7)],
+    #     fontsize=int(args.font_size),
+    # )
+    axes[2].set_ylim(0.3, 1.0)
+    axes[2].set_yticks(np.linspace(0.3, 1.0, 8))
+    axes[2].set_yticklabels(
+        [f"{int(v * 1)}%" for v in range(30, 110, 10)],
+        fontsize=int(args.font_size),)
+
+    _plot_one_metric(
+        ax=axes[1],
+        json_paths=json_paths,
+        names=list(args.names),
+        styles=styles,
+        bucket_name=used_bucket,
+        x_values=args.x_values,
+        metric_name="capture_spread_reward",
+        title="",
+        y_label="Spread Reward",
         font_size=int(args.font_size),
     )
 
@@ -324,6 +356,8 @@ def main() -> None:
         fontsize=int(args.font_size),
     )
     fig.tight_layout(rect=[0.0, 0.08, 1.0, 0.95])
+
+    fig.subplots_adjust(0.15, 0.15, 0.95, 0.9, 0.17, 0.35)
 
     # Step 4: 输出图片或直接展示
     if args.out is not None and len(str(args.out).strip()) > 0:
