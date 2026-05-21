@@ -304,7 +304,7 @@ eval:
   scenario_suite_val: datasets/val
   scenario_suite_test: datasets/test
   eval_episode_length: 600
-  bucket_group_by: ["num_hunters", "capture_dis", "capture_dis_ratio", "target_max_speed_ratio"]
+  bucket_group_by: ["num_hunters", "capture_dis_ratio", "target_max_speed_ratio", "world_size"]
 
   fixed_tasks: []
   fixed_tasks_file: null
