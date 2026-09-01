@@ -68,7 +68,7 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
-  spread_reward_mode: q_score  # Choices: ["uni_geo_center", "q_score", "pair_cossim"]
+  spread_reward_mode: uni_geo_center  # Choices: ["uni_geo_center", "q_score", "pair_cossim"]
   spread_reward_enable: true
   spread_reward_coef: 4.0
 
