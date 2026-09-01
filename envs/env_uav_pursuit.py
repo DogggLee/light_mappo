@@ -1490,6 +1490,14 @@ class UAVPursuitEnv(object):
         self.traj_diversity_window = int(max(2, int(reward_cfg.traj_diversity_window)))
         self.spread_reward_enable = bool(reward_cfg.spread_reward_enable)
         self.spread_reward_coef = float(reward_cfg.spread_reward_coef)
+        spread_reward_mode = str(getattr(reward_cfg, "spread_reward_mode", "uni_geo_center")).lower()
+        if spread_reward_mode not in ("uni_geo_center", "q_score", "pair_cossim"):
+            raise ValueError(
+                "Unsupported reward.spread_reward_mode: {} (choices: uni_geo_center, q_score, pair_cossim)".format(
+                    str(spread_reward_mode)
+                )
+            )
+        self.spread_reward_mode = str(spread_reward_mode)
         self.hunter_capture_reward = float(reward_cfg.hunter_capture_reward)
         self.hunter_capture_help_reward = float(reward_cfg.hunter_capture_help_reward)
         self.target_captured_penalty = float(reward_cfg.target_captured_penalty)
@@ -3697,7 +3705,7 @@ class UAVPursuitEnv(object):
     def _compute_spread_reward_values(self, respect_enable_gate: bool) -> np.ndarray:
         """
         功能:
-            基于“hunter->target单位向量几何中心偏移”计算包围分散奖励。
+            根据reward.spread_reward_mode计算包围分散奖励。
         输入:
             respect_enable_gate (bool): 是否遵守reward.spread_reward_enable开关。
         输出:
@@ -3729,11 +3737,28 @@ class UAVPursuitEnv(object):
             return rewards
 
         unit_arr = np.asarray(unit_vectors, dtype=np.float32)
-        centroid = np.mean(unit_arr, axis=0)
-        centroid_dist = float(np.linalg.norm(centroid))
-        centroid_dist = float(np.clip(centroid_dist, 0.0, 1.0))
-        spread_score = float(1.0 - centroid_dist)
-        spread_score = float(np.clip(spread_score, 0.0, 1.0))
+        spread_mode = str(self.spread_reward_mode)
+        if spread_mode == "uni_geo_center":
+            centroid = np.mean(unit_arr, axis=0)
+            centroid_dist = float(np.linalg.norm(centroid))
+            centroid_dist = float(np.clip(centroid_dist, 0.0, 1.0))
+            spread_score = float(1.0 - centroid_dist)
+            spread_score = float(np.clip(spread_score, 0.0, 1.0))
+        elif spread_mode == "q_score":
+            ref_idx = int(np.argmin(np.asarray([hunter_to_target_dist[hid] for hid in valid_hunter_ids], dtype=np.float32)))
+            ref_vec = unit_arr[ref_idx]
+            q_scores = np.sum(unit_arr * ref_vec.reshape(1, -1), axis=1) + 1.0
+            spread_score = float(np.mean(q_scores))
+        elif spread_mode == "pair_cossim":
+            pair_scores = []
+            for i in range(len(valid_hunter_ids)):
+                for j in range(i + 1, len(valid_hunter_ids)):
+                    pair_scores.append(float(np.dot(unit_arr[i], unit_arr[j])))
+            spread_score = float(np.mean(np.asarray(pair_scores, dtype=np.float32))) if len(pair_scores) > 0 else 0.0
+        else:
+            raise ValueError(
+                "Unsupported reward.spread_reward_mode during runtime: {}".format(str(spread_mode))
+            )
 
         team_scale = float(self._get_hunter_count_balance_scale())
         per_hunter_reward = float(self.spread_reward_coef) * spread_score * float(team_scale)

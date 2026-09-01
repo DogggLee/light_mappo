@@ -17,7 +17,7 @@ env:
   max_hunters_num: 3
   hunters_in_zone: true
   obs_mode: rel_polar  # Choices: ["legacy", "rel_polar"]
-  own_obs_items: ["speed_norm"]
+  own_obs_items: ["speed_norm"] # for rel_polar: ["global_pos", "global_vel", "local_vel", "speed_norm", "boundary_dist_norm"]
   action_frame: local
   hunter_collision_state_mode: dead  # Choices: ["dead", "collided"]
 
@@ -68,6 +68,7 @@ reward:
   traj_diversity_enable: false
   traj_diversity_coef: 2.0
 
+  spread_reward_mode: q_score  # Choices: ["uni_geo_center", "q_score", "pair_cossim"]
   spread_reward_enable: true
   spread_reward_coef: 4.0
 

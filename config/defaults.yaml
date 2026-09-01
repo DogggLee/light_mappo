@@ -207,6 +207,7 @@ reward:
   traj_diversity_window: 16
   spread_reward_enable: false
   spread_reward_coef: 0.0
+  spread_reward_mode: uni_geo_center  # Choices: ["uni_geo_center", "q_score", "pair_cossim"]
 
   # Capture reward
   hunter_capture_reward: 15.0

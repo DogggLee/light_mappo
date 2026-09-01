@@ -1,17 +1,17 @@
 base_config: config/v1/polar.yaml
-output_dir: results/sweeps/polar_own_obs
+output_dir: results/sweeps/Full_spread_mode
 max_parallel: 4
 python: python
 train_script: train/train.py
 time_stat: false
-env_name: Tech_Abla_neighborN_sweep_evalp50
+env_name: Full_spread_mode
 progress_interval_sec: 300
 progress_topk: 3
 
 parameters:
   exp.num_env_steps:
     values: [2000000]
-  env.neighbor_N: [1, 3, 5, 7, 10]
+  env.neighbor_N: [3]
   env.action_frame:
     values: [local]
   env.obs_mode:
@@ -22,6 +22,8 @@ parameters:
     values: [dead]
   reward.base_reward_mode:
     values: [delta_window]
+  # reward.base_delta_window:
+  #   values: [5]
   
   reward.capture_reward_allocation:
     values: [spread]
@@ -35,6 +37,9 @@ parameters:
     values: [true]
   reward.spread_reward_coef:
     values: [4.0]
+  reward.spread_reward_mode: 
+  # uni_geo_center  # Choices: ["uni_geo_center", "q_score", "pair_cossim"]
+    values: [uni_geo_center, q_score,pair_cossim]
   
   optim.lr:
     values: [0.0002]
